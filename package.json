@@ -1,0 +1,9 @@
+{
+  "name": "comfyui-rh-taskqueue",
+  "private": true,
+  "type": "module",
+  "description": "Development harness for ComfyUI-RH-TaskQueue (runtime does not need npm).",
+  "scripts": {
+    "test": "node --test tests/js"
+  }
+}

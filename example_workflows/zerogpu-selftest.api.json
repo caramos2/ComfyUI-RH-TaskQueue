@@ -1,0 +1,19 @@
+{
+  "1": {
+    "class_type": "String Literal",
+    "inputs": {
+      "string": "rh-queue-selftest"
+    }
+  },
+  "2": {
+    "class_type": "SaveText",
+    "inputs": {
+      "text": [
+        "1",
+        0
+      ],
+      "filename_prefix": "rh_taskqueue_selftest",
+      "format": "txt"
+    }
+  }
+}
