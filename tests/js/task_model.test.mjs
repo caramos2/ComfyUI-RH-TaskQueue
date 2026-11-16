@@ -9,6 +9,7 @@ import {
   fromJobsApi,
   liveExecutionSeconds,
   mergeRecord,
+  resolveRunningStart,
 } from '../../web/core/task_model.js'
 
 test('backend pending job maps to BACKEND_PENDING', () => {
@@ -102,4 +103,29 @@ test('plugin queued tasks measure the wait from creation', () => {
 test('backend pending tasks measure the wait from submission', () => {
   const record = { status: STATUS.BACKEND_PENDING, createdAt: 500, submittedAt: 1000 }
   assert.equal(liveQueueWaitSeconds(record, 4000), 3)
+})
+
+test('a task first seen while running still gets a start moment', () => {
+  const record = { id: 'p9', status: STATUS.RUNNING, executionStartedAt: null }
+  resolveRunningStart(record, null, 4000)
+  assert.equal(record.executionStartedAt, 4000)
+  assert.equal(liveExecutionSeconds(record, 6500), 2.5)
+})
+
+test('the websocket start moment wins over the local fallback', () => {
+  const record = { id: 'p10', status: STATUS.RUNNING, executionStartedAt: null }
+  resolveRunningStart(record, 1200, 4000)
+  assert.equal(record.executionStartedAt, 1200)
+})
+
+test('a known start moment is never overwritten', () => {
+  const record = { id: 'p11', status: STATUS.RUNNING, executionStartedAt: 900 }
+  resolveRunningStart(record, 1200, 4000)
+  assert.equal(record.executionStartedAt, 900)
+})
+
+test('a task that is not running is left alone', () => {
+  const record = { id: 'p12', status: STATUS.BACKEND_PENDING, executionStartedAt: null }
+  resolveRunningStart(record, null, 4000)
+  assert.equal(record.executionStartedAt, null)
 })

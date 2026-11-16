@@ -5,14 +5,11 @@
  * "running" are three different things and the card never conflates them.
  */
 
-import {
-  STATUS,
-  formatDuration,
-  formatTime,
-  liveExecutionSeconds,
-  liveQueueWaitSeconds,
-} from '../core/task_model.js';
-import { renderOutputPreview } from './output_preview.js';
+import { STATUS, formatDuration, formatTime } from '../core/task_model.js';
+import { findFirstOutputFile, renderOutputPreview } from './output_preview.js';
+import { timingText } from './timing_text.js';
+
+export { timingText };
 
 const STATUS_LABEL = {
   [STATUS.PLUGIN_QUEUED]: '插件排队',
@@ -23,31 +20,6 @@ const STATUS_LABEL = {
   [STATUS.CANCELLED]: '已中止',
   [STATUS.SUBMIT_FAILED]: '提交失败',
 };
-
-/** The status dependent timing line. */
-export function timingText(record, now = Date.now()) {
-  switch (record.status) {
-    case STATUS.PLUGIN_QUEUED:
-      return '插件排队 ' + formatDuration(liveQueueWaitSeconds(record, now));
-    case STATUS.BACKEND_PENDING: {
-      const wait = formatDuration(liveQueueWaitSeconds(record, now));
-      const position = record.queuePosition ? ' · 队列位置 ' + record.queuePosition : '';
-      return '后端等待 ' + wait + position;
-    }
-    case STATUS.RUNNING:
-      return '已运行 ' + formatDuration(liveExecutionSeconds(record, now));
-    case STATUS.COMPLETED:
-      return '本次耗时 ' + formatDuration(record.executionSeconds);
-    case STATUS.FAILED:
-      return '执行失败 · 耗时 ' + formatDuration(record.executionSeconds);
-    case STATUS.CANCELLED:
-      return '已中止 · 耗时 ' + formatDuration(record.executionSeconds);
-    case STATUS.SUBMIT_FAILED:
-      return '提交失败';
-    default:
-      return '';
-  }
-}
 
 function errorText(record) {
   const error = record.error;
@@ -129,8 +101,12 @@ export function renderTaskCard(record, ctx) {
   const actions = document.createElement('div');
   actions.className = 'rh-tq-actions';
 
+  // A queued task can be cancelled too: a plugin queued task is dropped
+  // from the plugin queue, a backend pending task is dequeued by ComfyUI.
   const canCancel =
-    record.status === STATUS.RUNNING || record.status === STATUS.BACKEND_PENDING;
+    record.status === STATUS.RUNNING ||
+    record.status === STATUS.BACKEND_PENDING ||
+    record.status === STATUS.PLUGIN_QUEUED;
   if (canCancel) {
     const cancel = document.createElement('button');
     cancel.className = 'rh-tq-btn rh-tq-btn--danger';
@@ -139,12 +115,16 @@ export function renderTaskCard(record, ctx) {
     actions.appendChild(cancel);
   }
 
-  if (record.status === STATUS.PLUGIN_QUEUED) {
-    const remove = document.createElement('button');
-    remove.className = 'rh-tq-btn';
-    remove.textContent = '移除';
-    remove.addEventListener('click', () => onAction('remove', record));
-    actions.appendChild(remove);
+  const revealTarget = findFirstOutputFile(record);
+  if (revealTarget) {
+    const reveal = document.createElement('button');
+    reveal.className = 'rh-tq-btn';
+    reveal.textContent = '打开文件夹';
+    reveal.title = '在文件管理器中定位该输出文件';
+    reveal.addEventListener('click', () =>
+      onAction('reveal', { id: record.id, target: revealTarget }),
+    );
+    actions.appendChild(reveal);
   }
 
   if (record.status === STATUS.FAILED && record.error && record.error.traceback) {

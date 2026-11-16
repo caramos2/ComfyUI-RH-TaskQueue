@@ -24,10 +24,18 @@ import { LegacyApiAdapter } from './adapters/legacy_api.js';
 import { Drawer } from './ui/drawer.js';
 import { computeSignature } from './core/fingerprint.js';
 import {
+  buildTitleIndex,
+  describePrompt,
+  lookupTitle,
+  titleFromWorkflowFile,
+} from './core/workflow_name.js';
+import {
   STATUS,
+  applyTiming,
   formatDuration,
   isTerminal,
   mergeRecord,
+  resolveRunningStart,
 } from './core/task_model.js';
 
 const STATUS_RANK = {
@@ -50,6 +58,12 @@ class TaskQueueController {
     this.handled = new Set();
     this.signatureByWorkflowId = new Map();
     this.estimates = new Map();
+    // A running job's start moment only ever arrives through the websocket
+    // event, so every start event is remembered - even for jobs we have not
+    // seen yet.
+    this.startedAtById = new Map();
+    this.workflowTitles = new Map();
+    this.detailRequested = new Set();
     this.adapter = null;
     this.drawer = null;
     this.queueManager = null;
@@ -69,6 +83,7 @@ class TaskQueueController {
     });
     this.drawer.mount(document.body);
     this.drawer.estimates = this.estimates;
+    this.workflowTitles = buildTitleIndex(this.app);
 
     const jobsAdapter = new JobsApiAdapter(this.apiClient);
     if (await jobsAdapter.supported()) {
@@ -112,6 +127,7 @@ class TaskQueueController {
       if (this.drawer) this.drawer.updateTimings();
     }, 1000);
 
+    await this.loadWorkflowTitles();
     await this.sync();
     this.scheduleNext(1200);
   }
@@ -157,14 +173,23 @@ class TaskQueueController {
             merged.executionStartedAt = pluginRecord.executionStartedAt;
           }
         }
+        if (!merged.workflowName) {
+          merged.workflowName = this.resolveWorkflowName(merged);
+        }
         if (!merged.signature && merged.workflowId) {
           const hint = this.signatureByWorkflowId.get(merged.workflowId);
           if (hint) merged.signatureHint = hint;
         }
+        this.restoreRunningStart(merged);
         this.records.set(record.id, merged);
 
         if (isTerminal(merged.status) && !this.handled.has(merged.id)) {
           await this.handleTerminal(merged);
+        } else if (!merged.workflowName && !this.detailRequested.has(merged.id)) {
+          // The frontend store had no title for this graph: fetch the job
+          // detail once so the card can at least describe what it ran.
+          this.detailRequested.add(merged.id);
+          this.fetchDetailForName(merged.id);
         }
       }
 
@@ -187,6 +212,78 @@ class TaskQueueController {
       this.busy = false;
       this.render();
     }
+  }
+
+  /**
+   * Load the workflow id -> title map from the backend.
+   *
+   * The frontend's own workflow store does not know the graph id of every
+   * saved workflow (the content is loaded lazily), but the workflow FILES do:
+   * the file name is the title and the file holds the graph id.
+   */
+  async loadWorkflowTitles() {
+    try {
+      const data = await this.apiClient.workflowTitles();
+      const titles = data && data.titles;
+      if (titles && typeof titles === 'object') {
+        for (const [id, title] of Object.entries(titles)) {
+          if (id && title) this.workflowTitles.set(id, title);
+        }
+      }
+    } catch (err) {
+      /* the titles are optional */
+    }
+  }
+
+  /**
+   * The name of the workflow a task ran.
+   *
+   * The jobs API carries no name at all, so the frontend's workflow store is
+   * consulted by graph id first (the backend reports workflow_id as the
+   * graph id), and the prompt is used to describe the workflow when even
+   * that fails.
+   */
+  resolveWorkflowName(record) {
+    if (!record) return null;
+    if (record.workflowName) return record.workflowName;
+    if (!this.workflowTitles.size) this.workflowTitles = buildTitleIndex(this.app);
+    const title = lookupTitle(this.workflowTitles, record.workflowId);
+    if (title) return title;
+    const prompt = record.workflow && record.workflow.prompt;
+    return describePrompt(prompt) || null;
+  }
+
+  /** Fetch one job detail so an unnamed workflow can still be described. */
+  async fetchDetailForName(id) {
+    try {
+      const detail = await this.adapter.detail(id);
+      if (!detail) return;
+      const record = this.records.get(id);
+      if (!record || record.workflowName) return;
+      const name =
+        this.resolveWorkflowName(detail) ||
+        describePrompt(detail.workflow && detail.workflow.prompt);
+      if (name) record.workflowName = name;
+      this.render();
+    } catch (err) {
+      /* the detail is optional */
+    }
+  }
+
+  /**
+   * Restore the start moment of a running job.
+   *
+   * The jobs API never reports execution_start_time for a running job, so
+   * the websocket event is the only source. When even that was missed, the
+   * moment the job was first seen running is used, so the timer runs instead
+   * of staying stuck at --:--.
+   */
+  restoreRunningStart(merged) {
+    // No websocket event for this task means it was submitted by another
+    // client, or the event was missed while the connection was down. The
+    // helper then falls back to the moment the task was first seen running,
+    // so the timer runs instead of staying stuck at --:--.
+    resolveRunningStart(merged, this.startedAtById.get(merged.id));
   }
 
   async refreshEstimates() {
@@ -276,20 +373,45 @@ class TaskQueueController {
     }
   }
 
+  /** Mark a task cancelled locally, without waiting for the backend. */
+  markCancelled(id) {
+    const record = this.records.get(id);
+    if (!record) return;
+    record.status = STATUS.CANCELLED;
+    if (record.executionEndedAt === null || record.executionEndedAt === undefined) {
+      record.executionEndedAt = Date.now();
+    }
+    this.handled.add(id);
+    // Releasing the pre-submit slot matters: a cancelled backend job never
+    // comes back from the API, so the slot would stay blocked forever.
+    if (this.queueManager) this.queueManager.markFinished(id, STATUS.CANCELLED);
+    this.render();
+  }
+
   // -- events -------------------------------------------------------------
 
   handleEvent(type, data) {
     const promptId = data && (data.prompt_id || data.promptId);
     if (!promptId) return;
     if (type === 'execution_start') {
+      // Remember the start even when the job is not known yet: this event is
+      // the only source of the start moment for a running job. The server
+      // stamps the event with an authoritative timestamp; the local clock is
+      // only the fallback for a server that does not.
+      const startedAt =
+        typeof data.timestamp === 'number' && Number.isFinite(data.timestamp)
+          ? data.timestamp
+          : Date.now();
+      this.startedAtById.set(promptId, startedAt);
       const record = this.records.get(promptId);
       if (record) {
-        if (record.executionStartedAt === null || record.executionStartedAt === undefined) {
-          record.executionStartedAt = Date.now();
-        }
-        record.status = STATUS.RUNNING;
+        // The server knows better than our own guess, so the start moment is
+        // corrected here - but a finished task never goes back to running.
+        record.executionStartedAt = startedAt;
+        if (!isTerminal(record.status)) record.status = STATUS.RUNNING;
+        applyTiming(record);
       }
-      if (this.queueManager) this.queueManager.markRunning(promptId, Date.now());
+      if (this.queueManager) this.queueManager.markRunning(promptId, startedAt);
       this.render();
       this.scheduleNext(600);
       return;
@@ -345,7 +467,15 @@ class TaskQueueController {
       throw new Error('当前工作流为空，无法加入队列');
     }
     const workflow = (result && result.workflow) || null;
-    const name = (workflow && workflow.name) || '未命名工作流';
+    // The graph carries no title of its own: the frontend keeps the title in
+    // its workflow store, keyed by the graph id.
+    const svc = this.app.extensionManager && this.app.extensionManager.workflow;
+    const active = svc && svc.activeWorkflow;
+    const name =
+      titleFromWorkflowFile(active) ||
+      lookupTitle(this.workflowTitles, workflow && workflow.id) ||
+      describePrompt(output) ||
+      '未命名工作流';
     return { prompt: output, workflow, name };
   }
 
@@ -388,11 +518,35 @@ class TaskQueueController {
         break;
       case 'cancel': {
         try {
-          await this.adapter.cancel(payload.id);
+          if (payload && payload.status === STATUS.PLUGIN_QUEUED) {
+            // Never submitted: just drop it from the plugin queue.
+            await this.queueManager.remove(payload.id);
+            this.records.delete(payload.id);
+            this.render();
+            break;
+          }
+          const cancelled = await this.adapter.cancel(payload.id);
+          if (cancelled) {
+            // A cancelled pending job is removed from the backend queue and
+            // never reaches the history, so /api/jobs will not report it
+            // again. The local record has to be updated right here or the
+            // card stays stuck on "waiting in the backend" forever.
+            this.markCancelled(payload.id);
+          } else {
+            this.scheduleNext(200);
+          }
         } catch (err) {
           console.warn('[rh_queue] cancel failed:', err && err.message);
+          this.scheduleNext(200);
         }
-        this.scheduleNext(200);
+        break;
+      }
+      case 'reveal': {
+        try {
+          await this.apiClient.revealOutput(payload.target || {});
+        } catch (err) {
+          console.warn('[rh_queue] reveal failed:', err && err.message);
+        }
         break;
       }
       case 'remove':

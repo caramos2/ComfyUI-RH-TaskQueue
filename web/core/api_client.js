@@ -147,6 +147,20 @@ export class ApiClient {
     return this._delete(serverUrl('/rh_queue/history/' + encodeURIComponent(signature)));
   }
 
+  /** Workflow id -> title, from the user's saved workflow files. */
+  workflowTitles() {
+    return this._get(serverUrl('/rh_queue/workflow_titles'));
+  }
+
+  /** Ask the backend to show an output file in the OS file manager. */
+  revealOutput({ filename, subfolder, type }) {
+    return this._post(serverUrl('/rh_queue/reveal'), {
+      filename,
+      subfolder: subfolder || '',
+      type: type || 'output',
+    });
+  }
+
   // -- ComfyUI native ----------------------------------------------------
 
   fetchJobs({ status, limit, offset, sortBy = 'created_at', sortOrder = 'desc' } = {}) {

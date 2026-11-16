@@ -162,6 +162,23 @@ export function mergeRecord(base, incoming) {
   return applyTiming(merged);
 }
 
+/**
+ * Give a running task a start moment.
+ *
+ * The jobs API never reports execution_start_time for a running job, so the
+ * start comes from the websocket event. When that event was missed - the
+ * task was submitted by another client, or the connection was down while it
+ * started - the moment the task was first seen running is used instead, so
+ * the timer runs instead of staying stuck at --:--.
+ */
+export function resolveRunningStart(record, rememberedStart, now = Date.now()) {
+  if (!record || record.status !== STATUS.RUNNING) return record;
+  if (num(record.executionStartedAt) !== null) return record;
+  const remembered = num(rememberedStart);
+  record.executionStartedAt = remembered === null ? now : remembered;
+  return applyTiming(record);
+}
+
 /** Live elapsed seconds for a running task. */
 export function liveExecutionSeconds(record, now = Date.now()) {
   if (!record || record.status !== STATUS.RUNNING) return null;

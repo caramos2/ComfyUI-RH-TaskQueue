@@ -118,6 +118,40 @@ def test_health_reports_counts():
         assert health["count"] == 1
         assert health["path"].endswith("h.sqlite3")
 
+def test_resolve_output_path_stays_inside_the_output_directory():
+    """The reveal route must never be able to point outside the output dir."""
+    import backend.routes as routes
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = os.path.realpath(tmp)
+        os.makedirs(os.path.join(base, "sub"))
+        target = os.path.join(base, "sub", "a.txt")
+        with open(target, "w", encoding="utf-8") as handle:
+            handle.write("x")
+
+        original = routes._output_base_dir
+        routes._output_base_dir = lambda kind: base
+        try:
+            resolved = routes._resolve_output_path("output", "sub", "a.txt")
+            assert resolved is not None
+            assert resolved.endswith(os.path.join("sub", "a.txt"))
+
+            # A traversal attempt has to be rejected, not resolved.
+            try:
+                routes._resolve_output_path("output", "..", "escape.txt")
+                raise AssertionError("path traversal was not rejected")
+            except ValueError:
+                pass
+
+            # A missing file resolves to its folder, a missing folder to None.
+            assert routes._resolve_output_path("output", "sub", "missing.txt") == os.path.join(
+                base, "sub"
+            )
+            assert routes._resolve_output_path("output", "nope", "missing.txt") is None
+        finally:
+            routes._output_base_dir = original
+
+
 
 def test_repeated_prompt_id_does_not_add_a_second_sample():
     """The same prompt id must stay idempotent while its sample exists."""

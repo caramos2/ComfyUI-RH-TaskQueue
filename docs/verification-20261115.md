@@ -11,8 +11,8 @@
 
 | 套件 | 命令 | 结果 |
 |---|---|---|
-| 后端耗时库 | `pytest tests -v` | **9 passed** |
-| 前端纯逻辑 | `node --test tests/js` | **24 passed** |
+| 后端耗时库 | `pytest tests -v` | **12 passed** |
+| 前端纯逻辑 | `node --test tests/js` | **38 passed** |
 | 语法检查 | `node --check` 全量 web/*.js | **0 failures** |
 | 端到端（指纹→耗时库） | `node tests/verify/verify_duration.mjs` | **11 passed / 0 failed** |
 
@@ -34,6 +34,12 @@
 | V10 | 刷新恢复 | 刷新页面 | 本地队列与后端任务都恢复 | IndexedDB 中的 2 个待派发任务刷新后仍在，排队计时跨刷新继续（01:11→01:17） | ✅ |
 | V11 | **真实点击交互**（补测） | 浏览器**真实鼠标点击**（非调试钩子） | 标签能开合抽屉、面板内控件可点 | 标签点击：`isOpen` false→true、面板 `left` 811→415（滑入视口）；筛选按钮真实点击后 `is-active` 移到「已完成」；× 真实点击关闭抽屉（`isOpen`→false）；`elementFromPoint(标签中心)` 由画布变为 `DIV.rh-tq-host` | ✅ |
 | V12 | 后端幂等边界（补测） | 同 `prompt_id` 重复上报，且耗时行已被删 | 不应 500，应重新计入样本 | HTTP 实测：record → 删 history 行 → 同 `prompt_id` 再 record，返回 **200** `{"ok":true,…,"sample_count":1}`（修复前是 HTTP 500 `TypeError: 'NoneType' object is not subscriptable`）；`verify_duration.mjs` 连跑两次均 11 passed | ✅ |
+| V13 | **工作流名**（B12） | 后端标题映射 + 页面实测 | 卡片显示真实中文标题 | `GET /rh_queue/workflow_titles` → 64 条 id→标题映射；`16522802-…` → 「sd系列集成工作流」、`19d11da3-…` → 「flux klein多图参考」；页面卡片实测显示「**sd系列集成工作流**」 | ✅ |
+| V14 | **运行中计时**（B13） | 页面内提交任务 + 两次采样 | 「已运行」随时间走动 | WS `execution_start` 到达并带**服务端权威 timestamp**（1794822138389）；t1 卡片「已运行 **00:09**」，5 秒后「已运行 **00:14**」；结束后「本次耗时 00:25」并入耗时库 | ✅ |
+| V15 | **取消同步**（B14） | **真实点击**排队卡片的「取消」 | 后端真的取消掉 | 点击后卡片「已中止」；`GET /api/jobs/{id}` → **404**；`/api/jobs` 列表中已消失；跨 3 轮同步卡片保持「已中止」，不回退也不卡死 | ✅ |
+| V16 | **预览无损**（主人确认项） | 字节级比对磁盘文件与 `/view` | 两者字节完全一致 | 磁盘 PNG 1,690,881B / sha `d6a8db3c…`；插件用的 `/view?filename=…&type=output` 返回 1,690,881B / sha **完全相同**；加 `&preview` 才是 145,364B 的 webp 降质版（插件不使用） | ✅ |
+| V17 | **打开文件夹**（新功能） | **真实点击**卡片「打开文件夹」 | 请求打到后端并定位文件 | 真实点击 → `POST /rh_queue/reveal` → **200**；后端 `explorer /select,` 定位到输出文件；路径穿越请求 → **400** | ✅ |
+| V18 | 取消卡片文案 | 从未启动就被取消的任务 | 不显示「耗时 --:--」 | 卡片显示「已中止」（无耗时字段），符合「它根本没跑过」的事实 | ✅ |
 
 ---
 
@@ -52,10 +58,17 @@
 | B9 | 详情里的 `workflow.prompt` 被合并丢弃 | `mergeRecord` 的字段白名单漏了 `workflow` | 白名单补上，指纹才能从 job 详情重算 |
 | B10 | **整个抽屉对真实鼠标点击完全无响应**（主人实测反馈：点右侧「任务队列」拉不开） | 宿主 `drawer.js` 设有 `pointer-events: none`（本意是不遮挡 ComfyUI 自身 UI），但 `pointer-events` 是**继承属性**，shadow root 内没有任何一处重新打开它 ⇒ 标签与面板内所有控件的计算值都是 `none`，`elementFromPoint(标签中心)` 直接命中背后的画布，点击被画布吃掉 | 标签与「打开态」面板显式 `pointer-events: auto`，「关闭态」面板保持 `none`；新增 `tests/js/styles.test.mjs` 3 项回归断言 |
 | B11 | `/rh_queue/record` 偶发 **HTTP 500** | `record()` 的幂等分支在「`prompt_id` 已记录、但耗时行已被删除」时返回 `None`，路由随后直接下标访问 `record["last_duration"]` → TypeError | 幂等分支改为「耗时行仍在才提前返回，行已删则继续写入样本」；路由再加一层防御，缺行返回 200 而非 500；自检脚本改用**每次运行唯一**的 `prompt_id`（此前写死 `selftest-1/2`，第二次跑必然撞库） |
+| B12 | 卡片全是「未命名工作流」（主人实测反馈） | `/api/jobs` **不返回任何名字字段**（只有 `id/status/priority/create_time/execution_*/outputs_count/preview_output/workflow_id`）；前端图 JSON 自身也没有 name/title（实测 keys：`id/revision/last_node_id/…/extra/version/seed_widgets`） | 三级回落：① 前端 active workflow / 工作流库的文件名 → ② **后端扫 `user/default/workflows` 建 id→标题映射**（`GET /rh_queue/workflow_titles`，60s 缓存；文件顶层 `id` 即后端 `workflow_id`）→ ③ `describePrompt`（ckpt 名 + 主要节点类型）兜底 |
+| B13 | **运行中任务时间停在 `--:--`**（主人实测反馈） | 两个独立成因：① 服务端 `execution_start` 是**定向事件**——`execution.py` 里 `broadcast=False`，只发给「提交该任务的 client_id」。此前用 PowerShell 以 `client_id=rh-timer-probe` 提交，那个 id **没有对应 socket**，事件被静默丢弃，前端永远收不到；② 插件兜底 `restoreRunningStart` 只在「记录由非 running 变成 running」时才补起始时刻，**首次见到就是 running 的任务永远拿不到起始时刻** | ① 直接采用事件自带的**服务端权威 timestamp**（`add_message` 每次都盖 `int(time.time()*1000)`），本地时钟仅作兜底；② 兜底改为「首次见到 running 就按当下打点」，抽成纯函数 `resolveRunningStart` + 4 项单测；③ 终态任务不被迟到的开始事件回退成 running |
+| B14 | **排队中点「取消」不同步**（主人实测反馈） | ComfyUI `cancel_job()` 对 pending 任务走 `dequeue`：**从不进 history**。于是该作业从 `/api/jobs` 列表消失、`GET /api/jobs/{id}` 返 404，后端再也不会汇报它 → 插件下次同步看不到它 → 卡片永久卡在「后端待执行」 | API 返回 `cancelled===true` 时**立即**本地标 CANCELLED，并调 `queueManager.markFinished` 释放预提交名额；`PLUGIN_QUEUED` 的「取消」= 从插件队列移除；文案上未跑过的任务不再显示「耗时 --:--」 |
 
 > **教训**：V7–V10 全部通过调试钩子**程序化驱动 DOM** 验证，**一次真实鼠标点击都没做过**，所以整块 UI 的命中测试从没被覆盖。指针事件类缺陷只能靠真实输入派发发现，读 DOM 状态是看不出来的。
 >
 > 另一个教训：**验证脚本本身必须可重复运行**。`verify_duration.mjs` 第一次跑全绿，第二次跑就 500 —— 撞的是它自己写死的 `prompt_id`。重跑一次全量验证，才把 B11 这个后端边界缺陷逼出来。
+>
+> **第三条教训（本轮最贵的一条）：验证请求的「身份」必须和服务端路由方式对齐。** B13 卡了两轮，根因不在插件而在验证方法：ComfyUI 的 `execution_start` 是发给「提交该任务的 client_id」那个 socket 的定向事件，而我一直用 PowerShell 以一个**没有 socket 的假 client_id` 提交任务 ⇒ 事件被服务端静默丢弃 ⇒ 插件当然收不到。** 换成「从页面自身提交」（同一个 client_id）后，事件立刻到位、计时当场走动。**排查「事件收不到」时，先问「这条消息在服务端是广播还是定向？目标身份是谁？我发起的请求用的那个身份吗？」**
+>
+> 第四条：ComfyUI 的**取消语义**是「移出队列、且不进历史」。所以「取消成功」的判据不能是「后端还会汇报它」——恰恰相反，成功之后后端就**永远不再提它**。插件必须在 API 返回 `cancelled===true` 的当下就自己落终态。
 
 ---
 

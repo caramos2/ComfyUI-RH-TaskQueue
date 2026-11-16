@@ -6,10 +6,11 @@
  * not carry every field we need. So events only ever *hint* at a state
  * change; the authoritative answer always comes from the Jobs API.
  *
- * Note: the execution_start event carries only { prompt_id } - no timestamp -
- * so the start moment is stamped locally when the event arrives. The error is
- * under a second, and the authoritative times replace it once the job
- * reaches a terminal state.
+ * Note: the execution_start event carries the server's own timestamp
+ * (ComfyUI stamps every status message with the wall clock), so the start
+ * moment is taken from the server when it is there and stamped locally
+ * otherwise. The authoritative times replace it once the job reaches a
+ * terminal state.
  */
 
 import { resolveApiInstance } from './api_client.js';

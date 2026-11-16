@@ -73,6 +73,31 @@ function linkElement(item, label) {
 }
 
 /**
+ * The first output file of a task, used by the "open folder" action.
+ */
+export function findFirstOutputFile(record) {
+  for (const entry of collectOutputItems(record)) {
+    const item = entry.item || {};
+    if (item.filename) {
+      return {
+        filename: item.filename,
+        subfolder: item.subfolder || '',
+        type: item.type || 'output',
+      };
+    }
+  }
+  const preview = record && record.previewOutput;
+  if (preview && preview.filename) {
+    return {
+      filename: preview.filename,
+      subfolder: preview.subfolder || '',
+      type: preview.type || 'output',
+    };
+  }
+  return null;
+}
+
+/**
  * Render the output section of a task card.
  * Returns null when the task has no outputs at all.
  */

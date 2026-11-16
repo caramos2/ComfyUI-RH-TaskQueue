@@ -5,7 +5,12 @@ here: the plugin reads it from ComfyUI's own Jobs API, so this backend stays
 a small, single-purpose component.
 """
 
+import json
 import logging
+import os
+import subprocess
+import sys
+import time
 
 from aiohttp import web
 
@@ -53,6 +58,121 @@ def _int_param(request, name, default, minimum, maximum):
     except (TypeError, ValueError):
         return default
     return max(minimum, min(value, maximum))
+
+
+def _output_base_dir(kind):
+    """The ComfyUI directory a given output type lives in."""
+    import folder_paths
+
+    if kind == "input":
+        return folder_paths.get_input_directory()
+    if kind == "temp":
+        return folder_paths.get_temp_directory()
+    return folder_paths.get_output_directory()
+
+
+def _resolve_output_path(kind, subfolder, filename):
+    """Resolve an output file inside ComfyUI's own directories.
+
+    Returns the file path when it exists, the containing folder when only
+    the folder exists, and None when neither does. Raises ValueError when
+    the path would escape the base directory.
+    """
+    base = os.path.realpath(_output_base_dir(kind))
+    candidate = os.path.realpath(os.path.join(base, subfolder or "", filename))
+    try:
+        inside = os.path.commonpath([base, candidate]) == base
+    except ValueError:
+        inside = False
+    if not inside:
+        raise ValueError("path escapes the ComfyUI output directory")
+    if os.path.isfile(candidate):
+        return candidate
+    folder = os.path.dirname(candidate)
+    if os.path.isdir(folder):
+        return folder
+    return None
+
+
+def _reveal_in_file_manager(path, is_file):
+    """Show a path in the OS file manager. True when it was opened."""
+    try:
+        if sys.platform.startswith("win"):
+            if is_file:
+                subprocess.Popen('explorer /select,"' + os.path.normpath(path) + '"')
+            else:
+                subprocess.Popen('explorer "' + os.path.normpath(path) + '"')
+            return True
+        if sys.platform == "darwin":
+            args = ["open", "-R"] if is_file else ["open"]
+            subprocess.Popen(args + [path])
+            return True
+        folder = path if not is_file else os.path.dirname(path)
+        subprocess.Popen(["xdg-open", folder])
+        return True
+    except Exception as exc:  # pragma: no cover - desktop integration
+        logging.warning("[ComfyUI-RH-TaskQueue] could not open the file manager: %s", exc)
+        return False
+
+
+_TITLE_CACHE = {"at": 0.0, "titles": {}}
+_TITLE_CACHE_TTL = 60.0
+
+
+def _user_workflow_titles():
+    """Map graph id -> workflow title from the user's workflow folder.
+
+    ComfyUI stores every saved workflow as a JSON file whose name IS the
+    workflow title, and whose "id" field is the graph id ComfyUI reports as
+    workflow_id. That file is the only place a title exists at all: the
+    graph ComfyUI keeps in the job has an id but no name.
+    """
+    titles = {}
+    try:
+        import folder_paths
+
+        user_dir = folder_paths.get_user_directory()
+    except Exception as exc:  # pragma: no cover - depends on the install
+        logging.debug("[ComfyUI-RH-TaskQueue] workflow titles unavailable: %s", exc)
+        return titles
+
+    # The frontend keeps the saved workflows in its own profile folder, which
+    # is "user/default" on a default install.
+    folders = [
+        os.path.join(user_dir, "default", "workflows"),
+        os.path.join(user_dir, "workflows"),
+    ]
+    for folder in folders:
+        try:
+            names = sorted(os.listdir(folder))
+        except OSError:
+            continue
+        for name in names:
+            if name.startswith(".") or not name.lower().endswith(".json"):
+                continue
+            path = os.path.join(folder, name)
+            try:
+                if os.path.getsize(path) > 32 * 1024 * 1024:
+                    continue
+                with open(path, "r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+            except Exception:
+                continue
+            if isinstance(data, dict):
+                graph_id = data.get("id")
+                if isinstance(graph_id, str) and graph_id:
+                    titles[graph_id] = name[:-5]
+    return titles
+
+
+def _cached_workflow_titles():
+    now = time.time()
+    if now - _TITLE_CACHE["at"] < _TITLE_CACHE_TTL:
+        return _TITLE_CACHE["titles"]
+    titles = _user_workflow_titles()
+    _TITLE_CACHE["at"] = now
+    _TITLE_CACHE["titles"] = titles
+    return titles
 
 
 async def _read_json(request):
@@ -146,6 +266,38 @@ def register_routes(routes, store: DurationStore):
                 "sample_count": record["sample_count"],
             }
         )
+
+    @routes.get("/rh_queue/workflow_titles")
+    async def rh_workflow_titles(request):
+        """Workflow id -> title, read from the user's saved workflows."""
+        titles = _cached_workflow_titles()
+        return _json({"titles": titles, "count": len(titles)})
+
+    @routes.post("/rh_queue/reveal")
+    async def rh_reveal(request):
+        """Show an output file in the OS file manager.
+
+        The file name is resolved against ComfyUI's own output directories
+        and must stay inside them.
+        """
+        payload = await _read_json(request)
+        if not isinstance(payload, dict):
+            return _json({"error": "invalid json body"}, status=400)
+        filename = payload.get("filename")
+        if not isinstance(filename, str) or not filename.strip():
+            return _json({"error": "filename is required"}, status=400)
+        subfolder = payload.get("subfolder") or ""
+        kind = payload.get("type") or "output"
+        if not isinstance(subfolder, str) or not isinstance(kind, str):
+            return _json({"error": "invalid subfolder or type"}, status=400)
+        try:
+            resolved = _resolve_output_path(kind, subfolder, filename)
+        except ValueError as exc:
+            return _json({"error": str(exc)}, status=400)
+        if resolved is None:
+            return _json({"error": "output not found"}, status=404)
+        opened = _reveal_in_file_manager(resolved, os.path.isfile(resolved))
+        return _json({"ok": opened, "path": resolved})
 
     @routes.get("/rh_queue/history")
     async def rh_history(request):
