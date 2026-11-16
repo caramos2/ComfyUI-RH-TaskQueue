@@ -514,7 +514,8 @@ class TaskQueueController {
         break;
       }
       case 'test-sound':
-        this.notifier.playChime();
+        // The test button always sounds, even inside the merge window.
+        this.notifier.playChime({ force: true });
         break;
       case 'cancel': {
         try {
