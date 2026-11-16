@@ -10,6 +10,12 @@ import { computeSignature } from '../../web/core/fingerprint.js';
 
 const BASE = process.env.RH_QUEUE_BASE || 'http://127.0.0.1:8188';
 
+// Unique per run: the backend keys idempotency on prompt_id, so reusing a
+// fixed id would make a second run collide with the first one.
+const RUN_ID = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+const SELFTEST_PROMPT_A = 'selftest-a-' + RUN_ID;
+const SELFTEST_PROMPT_B = 'selftest-b-' + RUN_ID;
+
 function buildPrompt(text) {
   return {
     '1': { class_type: 'String Literal', inputs: { string: text } },
@@ -80,7 +86,7 @@ const first = await post('/rh_queue/record', {
   signature: sigA,
   signature_version: 1,
   duration: 12.5,
-  prompt_id: 'selftest-1',
+  prompt_id: SELFTEST_PROMPT_A,
 });
 check('first record stores the duration', () => {
   assert.equal(first.ok, true);
@@ -93,7 +99,7 @@ const second = await post('/rh_queue/record', {
   signature: sigA,
   signature_version: 1,
   duration: 20.0,
-  prompt_id: 'selftest-2',
+  prompt_id: SELFTEST_PROMPT_B,
 });
 check('second record updates count and average', () => {
   assert.equal(second.sample_count, 2);

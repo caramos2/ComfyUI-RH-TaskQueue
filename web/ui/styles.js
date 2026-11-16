@@ -37,6 +37,10 @@ export const CSS = `
   font-size: 12px;
   z-index: 10010;
   user-select: none;
+  /* The host sets pointer-events:none so it never blocks ComfyUI's own UI.
+     pointer-events is inherited, so the tab must opt back in or it is
+     invisible to real mouse clicks (elementFromPoint hits the canvas). */
+  pointer-events: auto;
 }
 .rh-tq-tab:hover { background: #2e2e2e; color: #fff; }
 .rh-tq-tab__badge {
@@ -67,8 +71,10 @@ export const CSS = `
   transform: translateX(calc(100% + 16px));
   transition: transform 0.18s ease;
   z-index: 10009;
+  /* Closed drawer stays inert; only the open panel accepts pointer events. */
+  pointer-events: none;
 }
-.rh-tq-panel.is-open { transform: translateX(0); }
+.rh-tq-panel.is-open { transform: translateX(0); pointer-events: auto; }
 
 .rh-tq-head {
   padding: 10px 12px;

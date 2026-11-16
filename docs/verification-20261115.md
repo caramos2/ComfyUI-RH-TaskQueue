@@ -12,7 +12,7 @@
 | 套件 | 命令 | 结果 |
 |---|---|---|
 | 后端耗时库 | `pytest tests -v` | **9 passed** |
-| 前端纯逻辑 | `node --test tests/js` | **21 passed** |
+| 前端纯逻辑 | `node --test tests/js` | **24 passed** |
 | 语法检查 | `node --check` 全量 web/*.js | **0 failures** |
 | 端到端（指纹→耗时库） | `node tests/verify/verify_duration.mjs` | **11 passed / 0 failed** |
 
@@ -32,6 +32,8 @@
 | V8 | 取消 | `POST /api/jobs/{id}/cancel` | 状态转 cancelled | 运行中任务 → `{"cancelled":true}` → `cancelled`，且**不计入耗时样本** | ✅ |
 | V9 | 预提交上限 + FIFO | 连入 3 任务，上限=1 | 一次只放行 1 个，终态后放行下一个 | 时间线：`inFlight` **始终 ≤ 1**，严格 1→2→3 派发，t=1.6s 与 t=2.6s 各释放一个名额 | ✅ |
 | V10 | 刷新恢复 | 刷新页面 | 本地队列与后端任务都恢复 | IndexedDB 中的 2 个待派发任务刷新后仍在，排队计时跨刷新继续（01:11→01:17） | ✅ |
+| V11 | **真实点击交互**（补测） | 浏览器**真实鼠标点击**（非调试钩子） | 标签能开合抽屉、面板内控件可点 | 标签点击：`isOpen` false→true、面板 `left` 811→415（滑入视口）；筛选按钮真实点击后 `is-active` 移到「已完成」；× 真实点击关闭抽屉（`isOpen`→false）；`elementFromPoint(标签中心)` 由画布变为 `DIV.rh-tq-host` | ✅ |
+| V12 | 后端幂等边界（补测） | 同 `prompt_id` 重复上报，且耗时行已被删 | 不应 500，应重新计入样本 | HTTP 实测：record → 删 history 行 → 同 `prompt_id` 再 record，返回 **200** `{"ok":true,…,"sample_count":1}`（修复前是 HTTP 500 `TypeError: 'NoneType' object is not subscriptable`）；`verify_duration.mjs` 连跑两次均 11 passed | ✅ |
 
 ---
 
@@ -48,6 +50,12 @@
 | B7 | 文本输出被当成文件名渲染成坏链接 | `outputs[node].text` 是裸字符串数组，不是文件名 | 裸字符串按文本正文渲染，文件项才走 `/view` |
 | B8 | 刷新后历史任务被重复记样本 | 重建视图时会再次上报同一批 job | 后端新增 `recorded_prompts` 幂等表，按 prompt_id 去重 |
 | B9 | 详情里的 `workflow.prompt` 被合并丢弃 | `mergeRecord` 的字段白名单漏了 `workflow` | 白名单补上，指纹才能从 job 详情重算 |
+| B10 | **整个抽屉对真实鼠标点击完全无响应**（主人实测反馈：点右侧「任务队列」拉不开） | 宿主 `drawer.js` 设有 `pointer-events: none`（本意是不遮挡 ComfyUI 自身 UI），但 `pointer-events` 是**继承属性**，shadow root 内没有任何一处重新打开它 ⇒ 标签与面板内所有控件的计算值都是 `none`，`elementFromPoint(标签中心)` 直接命中背后的画布，点击被画布吃掉 | 标签与「打开态」面板显式 `pointer-events: auto`，「关闭态」面板保持 `none`；新增 `tests/js/styles.test.mjs` 3 项回归断言 |
+| B11 | `/rh_queue/record` 偶发 **HTTP 500** | `record()` 的幂等分支在「`prompt_id` 已记录、但耗时行已被删除」时返回 `None`，路由随后直接下标访问 `record["last_duration"]` → TypeError | 幂等分支改为「耗时行仍在才提前返回，行已删则继续写入样本」；路由再加一层防御，缺行返回 200 而非 500；自检脚本改用**每次运行唯一**的 `prompt_id`（此前写死 `selftest-1/2`，第二次跑必然撞库） |
+
+> **教训**：V7–V10 全部通过调试钩子**程序化驱动 DOM** 验证，**一次真实鼠标点击都没做过**，所以整块 UI 的命中测试从没被覆盖。指针事件类缺陷只能靠真实输入派发发现，读 DOM 状态是看不出来的。
+>
+> 另一个教训：**验证脚本本身必须可重复运行**。`verify_duration.mjs` 第一次跑全绿，第二次跑就 500 —— 撞的是它自己写死的 `prompt_id`。重跑一次全量验证，才把 B11 这个后端边界缺陷逼出来。
 
 ---
 
@@ -56,4 +64,5 @@
 - 浏览器通知的**实际弹出**未做系统级验证（自动化环境无法确认系统通知横幅）；音效逻辑单测通过，"测试音效"按钮会在用户手势内解锁 AudioContext。
 - 多标签页 leader 租约的**竞争切换**未做双标签实测（当前是单标签验证）。
 - Legacy（`/queue`+`/history`）适配器只做了代码级实现，本机 ComfyUI 0.45.0 有 Jobs API，未触发回退路径。
+- 「加入任务队列」按钮**未做真实点击**（会真实提交主人当前画布上的工作流并消耗 GPU）；其可点性由 V11 中面板计算值为 `pointer-events: auto` 间接覆盖。
 - 真实多实例并行（Phase 5）不在本轮范围。

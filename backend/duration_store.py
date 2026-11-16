@@ -78,16 +78,24 @@ class DurationStore:
 
     # -- public API --------------------------------------------------------
 
-    def get(self, signature):
-        """Return the stored record for signature, or None."""
+    def _row(self, signature):
+        """Fetch one row without taking the lock.
+
+        Called from inside an open transaction where the caller already owns
+        the lock.
+        """
         if not is_valid_signature(signature):
             return None
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT * FROM workflow_duration_history WHERE signature = ?",
-                (signature,),
-            ).fetchone()
+        row = self._conn.execute(
+            "SELECT * FROM workflow_duration_history WHERE signature = ?",
+            (signature,),
+        ).fetchone()
         return dict(row) if row is not None else None
+
+    def get(self, signature):
+        """Return the stored record for signature, or None."""
+        with self._lock:
+            return self._row(signature)
 
     def record(self, signature, duration, prompt_id=None, signature_version=1):
         """Store one successful execution duration and return the new row."""
@@ -110,9 +118,15 @@ class DurationStore:
                         "SELECT 1 FROM recorded_prompts WHERE prompt_id = ?", (prompt_id,)
                     ).fetchone()
                     if seen is not None:
-                        # Already counted: do not add a second sample.
-                        self._conn.execute("COMMIT")
-                        return self.get(signature)
+                        existing = self._row(signature)
+                        if existing is not None:
+                            # Already counted: do not add a second sample.
+                            self._conn.execute("COMMIT")
+                            return existing
+                        # The idempotency row outlived its duration row (the
+                        # history entry was deleted in between). Fall through
+                        # and store the sample again instead of returning
+                        # None, which used to turn into a 500 on the route.
                     self._conn.execute(
                         "INSERT OR REPLACE INTO recorded_prompts (prompt_id, signature, recorded_at) "
                         "VALUES (?, ?, ?)",

@@ -127,6 +127,17 @@ def register_routes(routes, store: DurationStore):
             return _json({"error": "duration must be >= 0"}, status=400)
         prompt_id = payload.get("prompt_id")
         record = store.record(signature, float(duration), prompt_id, version)
+        if record is None:
+            # Defensive: a missing row must not become a 500 for the frontend.
+            return _json(
+                {
+                    "ok": False,
+                    "found": False,
+                    "last_duration": None,
+                    "avg_duration": None,
+                    "sample_count": 0,
+                }
+            )
         return _json(
             {
                 "ok": True,

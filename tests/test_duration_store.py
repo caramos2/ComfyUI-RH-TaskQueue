@@ -117,3 +117,28 @@ def test_health_reports_counts():
         assert health["ok"] is True
         assert health["count"] == 1
         assert health["path"].endswith("h.sqlite3")
+
+
+def test_repeated_prompt_id_does_not_add_a_second_sample():
+    """The same prompt id must stay idempotent while its sample exists."""
+    with _store() as store:
+        signature = "8" * 64
+        store.record(signature, 4.0, "pid-same")
+        record = store.record(signature, 9.0, "pid-same")
+        assert record is not None
+        assert record["sample_count"] == 1
+        assert record["last_duration"] == 4.0
+
+
+def test_record_after_history_delete_still_stores_a_sample():
+    """A prompt id counted earlier must not break the store when its duration
+    row was deleted in between. This used to return None, which made the
+    /rh_queue/record route answer 500."""
+    with _store() as store:
+        signature = "9" * 64
+        store.record(signature, 5.0, "pid-dup")
+        assert store.delete(signature) is True
+        record = store.record(signature, 7.0, "pid-dup")
+        assert record is not None
+        assert record["sample_count"] == 1
+        assert record["last_duration"] == 7.0
