@@ -1,178 +1,304 @@
 # ComfyUI-RH-TaskQueue
 
-给 ComfyUI 加一个 RunningHub 风格的**右侧任务抽屉**：统一查看任务、真实执行耗时、输出结果预览、完成提醒，以及一个插件托管的提交队列和**工作流耗时档案**。
+A RunningHub-style **task drawer** for ComfyUI: one panel that shows every task,
+how long it really ran, what it produced, and a queue you can see and control.
 
-> 设计依据：`docs/superpowers/specs/2026-11-15-rh-taskqueue-design.md`
-> 实施计划：`docs/superpowers/plans/2026-11-15-rh-taskqueue-phase1-3.md`
+**English** | [简体中文](README.zh-CN.md)
 
----
-
-## 先说清楚三件事
-
-1. **「预提交上限」不是 GPU 并行数。**
-   单个标准 ComfyUI 实例只有一个 `prompt_worker`，队列里可以有很多任务，但它们是**顺序执行**的。
-   这个上限控制的是「插件提前交给 ComfyUI 多少个任务」，超出部分留在插件自己的「本地排队」列表里。
-   真正的并行需要多实例，那不在本版范围内。
-
-2. **提交时间 ≠ 执行时间。**
-   任务从插件队列释放出去只是**提交**给 ComfyUI；真正开始执行是后端确认之后的事。
-   卡片上的「后端等待」和「已运行」是两个独立计时，不会混在一起。
-
-3. **不劫持原生按钮。**
-   原生 Queue Prompt 按钮行为完全不变，`app.queuePrompt` 没有被包装。
-   插件用自己的「加入任务队列」入口提交冻结的工作流快照。
+![The task drawer in English](docs/screenshots/drawer-en.png)
 
 ---
 
-## 安装
+## What it is
 
-本机已装在：
+ComfyUI tells you very little about the work you are doing. The queue is a
+number in the corner, a finished job vanishes from the screen, and nothing
+tells you how long a workflow actually took, or which workflow that was.
 
-```text
-C:\Users\prett\Desktop\gamehole\ComfyUI-WorkFisher-V2\ComfyUI\custom_nodes\ComfyUI-RH-TaskQueue
-```
+This plugin adds a panel on the right edge of the ComfyUI window that answers
+those questions:
 
-该目录是一个**目录联接（junction）**，指向源码仓库：
+- **every task in one list** - running, waiting in the backend, waiting in the
+  plugin queue, done or failed, with the name of the workflow that ran,
+- **real execution time** - the time a job actually spent running, taken from
+  ComfyUI's own `execution_start` event, kept apart from the time it spent
+  waiting in a queue,
+- **output previews** - images, video, audio, text and 3D files right in the
+  card, with a link to the file and a button that opens the output folder,
+- **a duration archive** - the last and the average runtime of a workflow, so
+  the next run can be compared against reality,
+- **a queue you control** - a green `❄ Run` button next to ComfyUI's own run
+  button that submits into the plugin's queue, where the waiting tasks are
+  visible, cancellable, and capped by a limit you choose,
+- **an interface in your language** - English and Simplified Chinese, picked
+  from the browser language or pinned in the drawer.
 
-```text
-C:\Users\prett\Desktop\minimax code work\ComfyUI-RH-TaskQueue
-```
+![The plugin run button next to ComfyUI's own run button](docs/screenshots/run-button-en.png)
 
-所以：**改源码仓库 = 立刻生效**，刷一下浏览器页面就行，不需要复制文件。
-重启 ComfyUI 才会加载 Python 后端改动。
-
-### 手动安装到别的机器
-
-把整个仓库复制到 `<ComfyUI>/custom_nodes/ComfyUI-RH-TaskQueue` 即可。
-**零第三方依赖**：后端只用 Python 标准库（`sqlite3` + aiohttp 路由），前端只用浏览器原生 API。
+The plugin registers **no custom nodes** and adds **no dependencies**. It is a
+frontend extension plus seven small HTTP routes on the ComfyUI server.
 
 ---
 
-## 用法
+## Install
 
-启动 ComfyUI 后，页面右侧会出现一条竖排的**「任务队列」**开关，点开就是抽屉。
+Clone the repository into your ComfyUI `custom_nodes` folder:
 
-| 区域 | 内容 |
+`@bash
+cd <ComfyUI>/custom_nodes
+git clone https://github.com/caramos2/ComfyUI-RH-TaskQueue.git
+`@
+
+Then restart ComfyUI. A page reload is enough for frontend-only changes, but
+the Python backend is only picked up on a restart.
+
+### Manual install
+
+Copy or extract the whole repository into
+`<ComfyUI>/custom_nodes/ComfyUI-RH-TaskQueue`. The folder name must stay
+`ComfyUI-RH-TaskQueue` - ComfyUI loads every directory under
+`custom_nodes` as a plugin.
+
+### Requirements
+
+| | |
 |---|---|
-| 顶部徽标 | 数据源模式：`Jobs API 模式` / `Legacy 模式`，以及是否支持取消 |
-| 摘要三数 | **运行中** / **后端排队** / **本地排队** —— 三个独立数字，不混算 |
-| 控制区 | 预提交上限（1-8，默认 1）、自动派发、声音、通知、**加入任务队列**、测试音效 |
-| 过滤栏 | 全部 / 运行中 / 排队中 / 已完成 / 失败 |
+| ComfyUI | 0.45.0 or newer (tested on 0.45.0, new frontend) |
+| Python | 3.12 or newer |
+| Node.js | only to run the test suite, never at runtime |
+| Dependencies | none |
 
-「加入任务队列」会**冻结当前工作流快照**再入队，所以之后继续改画布也不会影响已排队的任务。
-
-任务卡上会显示：状态徽标、工作流名、创建时间、耗时（按状态用不同措辞）、
-上次参考耗时、输出数量、失败原因，以及取消 / 移除 / 查看堆栈等操作。
+The plugin works with both ComfyUI APIs: it uses the `/api/jobs` endpoints
+when they are available and falls back to `/queue` plus `/history`
+otherwise. The badge in the drawer header tells you which one is in use.
 
 ---
 
-## 输出预览
+## Using it
 
-任务结束后按媒体类型分别渲染：
+Open the drawer with the vertical **Task Queue** tab on the right edge.
 
-| 类型 | 呈现 |
+| Area | What it shows |
 |---|---|
-| 图片 | 缩略图网格，点击开原图 |
-| 视频 | 播放器 |
-| 音频 | 播放器 |
-| 3D | 文件名 + 打开/下载入口 |
-| 文本 | 折叠预览（正文直接显示 + 文件链接） |
-| 未知 | 保留条目，显示文件名与下载入口，**不静默丢弃** |
+| Header | the data source in use (*Jobs API mode* / *Legacy mode*) and whether cancelling is supported |
+| Three counters | **Running**, **Backend queue**, **Plugin queue** - three separate numbers, never mixed up |
+| Controls | pre-submit limit, auto dispatch, sound, notifications, *Add to task queue*, *Test sound*, language |
+| Filters | All / Running / Queued / Done / Failed |
 
-所有媒体地址都走 ComfyUI 自己的 `/view?filename=&subfolder=&type=`，插件不拼磁盘路径，也不接受任意本地路径。
+### The green ❄ Run button
+
+![The plugin run button](docs/screenshots/run-button-en.png)
+
+The button sits directly to the right of ComfyUI's own run button. Hover it for
+about a second and a tooltip explains what it does.
+
+Pressing it:
+
+1. **freezes the canvas** into a snapshot - a deep copy of the API prompt and
+   the workflow, taken at the instant you press the button,
+2. **puts that snapshot into the plugin's queue**, where the task waits until a
+   pre-submit slot is free,
+3. **shows the waiting count** on the button badge, and the waiting task in the
+   drawer, where it can be cancelled.
+
+Because the snapshot is a copy, later edits to the canvas cannot change what a
+queued task runs with - and because the queue lives in IndexedDB, a page
+reload does not lose it.
+
+ComfyUI's own *Queue Prompt* button hands the workflow straight to the server,
+where it waits in the server's queue. The difference is not the parameters -
+ComfyUI captures those when it accepts a prompt - but **control**: the plugin
+queue lets you hold tasks back, see them and cancel them.
+
+### Pre-submit limit
+
+A stock ComfyUI instance has a single `prompt_worker`. Many tasks can sit in
+the queue, but they run **one after another**.
+
+The *pre-submit limit* (1 to 8, default 1) controls how many tasks the plugin
+hands over to ComfyUI at a time. Everything above that stays in the plugin's
+own *Plugin queue*. It is **not** a GPU parallelism setting - real parallelism
+needs several ComfyUI instances.
+
+### Durations
+
+A card shows three different things, and never mixes them up:
+
+- **Backend queue** - the task is with ComfyUI and has not started yet,
+- **Running** - the task is executing right now,
+- **Duration** - how long it took once it finished.
+
+The running timer starts from the server's own `execution_start` event, so
+it is not an estimate.
+
+### Output previews
+
+| Type | How it is shown |
+|---|---|
+| Image | thumbnail grid, click for the full size |
+| Video / Audio | inline player |
+| Text | the text itself, plus a link to the file |
+| 3D | the file name with an open/download link |
+| Unknown | the file name and a download link - **never dropped silently** |
+
+Every media URL goes through ComfyUI's own `/view` endpoint. The plugin never
+builds a disk path, and it never accepts one from the browser.
+
+### The duration archive
+
+Every **successful** run is stored in a local SQLite database
+(`data/duration_history.sqlite3`, git-ignored) and keyed by a signature of
+the workflow:
+
+- the signature is `SHA256(canonical_json(normalized_api_prompt))` with
+  `signature_version = 1`,
+- normalisation recursively strips `seed` and `noise_seed`, so a new random
+  seed does not create a new record - but a different model, step count,
+  resolution or prompt does,
+- only successful runs count; failures and cancellations do not,
+- every `prompt_id` is counted once, so a page reload cannot inflate the
+  statistics.
+
+A card then shows *last run* and *average (n runs)*. These are **references**,
+not a prediction of the remaining time: hardware load, caches, model state and
+parameter changes all affect the real duration.
+
+### Sound and notifications
+
+When a task finishes you can get a chime and a desktop notification.
+
+Several tasks often finish within the same second, so the chimes are **merged**
+into one - playing them all at once would sum their amplitude and burst. Every
+chime also runs through one shared limiter. The browser only allows audio
+after a user gesture, so press *Test sound* (or switch the sound on) once.
 
 ---
 
-## 工作流耗时档案
+## The plugin's own HTTP API
 
-- 签名：`SHA256(canonical_json(normalized_api_prompt))`，版本号 `signature_version = 1`。
-- 归一化会**递归剔除** `seed` / `noise_seed`，所以换个随机种子不会产生新记录；
-  改模型、改 steps、改分辨率、改提示词则会。
-- 只有**成功**的执行才计入样本；失败与中止不计。
-- 每个 `prompt_id` 只记一次（后端有幂等表保护），刷新页面不会重复累加。
-- 卡片上的「上次耗时 / 平均耗时（N 次）」是**历史参考**，不是剩余时间预测。
-  硬件负载、缓存、模型状态、参数变化都会影响实际时长。
+All routes live under `/rh_queue` and are only used by the plugin itself.
 
-后端存储：`data/duration_history.sqlite3`（SQLite + WAL，事务写入，已 gitignore）。
-
----
-
-## 插件自带 API
-
-| 路由 | 方法 | 作用 |
+| Route | Method | Purpose |
 |---|---|---|
-| `/rh_queue/health` | GET | 版本、耗时库状态、能力探测（Jobs API / Legacy / 取消）、当前模式 |
-| `/rh_queue/estimate` | POST | 按签名查上次耗时、平均耗时、样本数、更新时间 |
-| `/rh_queue/record` | POST | 写入一次成功执行耗时（按 prompt_id 幂等） |
-| `/rh_queue/history` | GET | 分页查询耗时记录 |
-| `/rh_queue/history/{signature}` | DELETE | 删除某条耗时记录 |
+| `/rh_queue/health` | GET | version, database state, capability probe (Jobs API / Legacy / cancel) |
+| `/rh_queue/estimate` | POST | last duration, average duration, sample count for a signature |
+| `/rh_queue/record` | POST | store one successful run (idempotent per prompt id) |
+| `/rh_queue/history` | GET | paged duration records |
+| `/rh_queue/history/{signature}` | DELETE | delete one duration record |
+| `/rh_queue/workflow_titles` | GET | graph id to workflow title map |
+| `/rh_queue/reveal` | POST | open the output folder in the file explorer |
 
-**后端不存任务状态、不做队列、不存输出** —— 那些一律来自 ComfyUI 原生 API。
-
----
-
-## 已知边界
-
-- 浏览器完全关闭后不会派发插件队列，也不会弹系统通知（浏览器限制）。
-  真正的后台常驻通知需要桌面伴随进程，不在本版范围。
-- 多标签页同时打开时，只有一个标签页负责派发（localStorage 租约 + BroadcastChannel 广播），
-  其余标签页只读同步。
-- ComfyUI 自身的历史保留策略仍然生效；插件只存耗时摘要，不承担输出归档。
-- 后端不支持按作业取消的旧版本里，「取消」按钮会如实报告无法取消，不假装成功。
+**The backend stores no task state, runs no queue and keeps no outputs.**
+Those always come from ComfyUI's own API.
 
 ---
 
-## 开发与自检
+## Known limits
 
-```powershell
-# 后端单测
-& "C:\Users\prett\Desktop\gamehole\ComfyUI-WorkFisher-V2\python\python.exe" -m pytest tests -v
+- With the browser completely closed, the plugin queue is not dispatched and no
+  system notification appears - that is a browser limitation. A real
+  background daemon would be needed for that.
+- With several tabs open, only one tab dispatches the queue (a localStorage
+  lease plus a BroadcastChannel). The others stay in sync. If the tab holding
+  the lease loses the connection to the backend, it hands the lease over.
+- A task that was submitted by **another** client - the API, another browser,
+  another machine - has no `execution_start` event for this tab. The running
+  timer then starts from the moment the task was first seen running, so it can
+  be slightly late. The plugin cannot know when such a task really started.
+- ComfyUI's own history retention still applies. The plugin stores duration
+  summaries only; it is not an output archive.
+- On a backend without a per-job cancel API, the *Cancel* button reports that
+  cancelling is not supported instead of pretending to succeed.
 
-# 前端纯逻辑单测
+---
+
+## Development
+
+`@powershell
+# Frontend unit tests - pure logic, no browser required
 node --test tests/js
 
-# 端到端（需要 ComfyUI 在 8188 上跑着）
+# Backend unit tests
+python -m pytest tests -q
+
+# End-to-end check - needs ComfyUI on 127.0.0.1:8188
 node tests/verify/verify_duration.mjs
-```
+`@
 
-零 GPU 自检工作流：`example_workflows/zerogpu-selftest.api.json`（`String Literal` → `SaveText`，不碰显卡）。
-最小 SDXL 自检工作流：`example_workflows/min-sdxl-512.api.json`（512×512 / 4 步）。
+Two self-test workflows ship with the plugin:
 
----
+- `example_workflows/zerogpu-selftest.api.json` - a string literal saved to a
+  text file, it never touches the GPU,
+- `example_workflows/min-sdxl-512.api.json` - a 512x512 SDXL run in four steps.
 
-## 目录结构
+### Project layout
 
-```text
+`@text
 ComfyUI-RH-TaskQueue/
-├── __init__.py                  # WEB_DIRECTORY + 后端路由注册（零节点）
+├── __init__.py                  # WEB_DIRECTORY + backend route registration
 ├── backend/
-│   ├── routes.py                # /rh_queue/* 五条路由
-│   ├── duration_store.py        # SQLite（WAL + 事务 + 幂等表）
-│   └── fingerprint.py           # 签名格式校验
+│   ├── routes.py                # the seven /rh_queue/* routes
+│   ├── duration_store.py        # SQLite (WAL + transactions + idempotency)
+│   └── fingerprint.py           # signature format validation
 ├── web/
-│   ├── rh_task_queue.js         # 唯一扩展入口
-│   ├── core/                    # api_client / task_model / task_store /
-│   │                            # queue_manager / event_bridge /
-│   │                            # fingerprint / notifier / settings
-│   ├── adapters/                # jobs_api / legacy_api
-│   └── ui/                      # drawer / task_card / output_preview / styles
-├── tests/                       # pytest + node:test + 端到端脚本
+│   ├── rh_task_queue.js         # the only file that registers an extension
+│   ├── core/                    # api_client, task_model, task_store,
+│   │                            # queue_manager, event_bridge, fingerprint,
+│   │                            # snapshot, notifier, settings, i18n
+│   ├── locales/                 # zh-CN.js, en.js
+│   ├── adapters/                # jobs_api, legacy_api
+│   └── ui/                      # drawer, task_card, timing_text,
+│                                # run_button, output_preview, styles
+├── tests/                       # pytest + node:test + end-to-end script
 ├── example_workflows/
-└── docs/superpowers/            # 设计文档与实施计划
-```
+└── docs/
+`@
 
-**只有 `web/rh_task_queue.js` 调用 `app.registerExtension`**，其余都是纯 ES 模块，
-不会���前端误当成第二个扩展入口。
+Only `web/rh_task_queue.js` calls `app.registerExtension`. Everything else
+is a plain ES module, so the frontend cannot mistake it for a second extension
+entry point.
+
+### Adding a language or a string
+
+Language packs live in `web/locales/`. Both packs must carry exactly the
+same keys - the test suite compares the two key lists, so a missing
+translation fails the tests instead of blanking a label. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
-## 故障排查
+## Troubleshooting
 
-| 现象 | 原因与处理 |
+| Symptom | Cause and fix |
 |---|---|
-| 抽屉没出现 | 看 ComfyUI 启动日志有没有 `[ComfyUI-RH-TaskQueue] registered /rh_queue/* routes`；没有说明后端注册失败，前端仍会加载但耗时库不可用 |
-| 抽屉显示「耗时库未就绪」 | `/rh_queue/health` 没通，检查插件目录是否在 `custom_nodes` 下、是否需要重启 ComfyUI |
-| 顶部显示「Legacy 模式」 | 该 ComfyUI 没有 `/api/jobs`，插件自动退回 `/queue` + `/history` |
-| 任务一直「插件排队」 | 预提交上限被占满，或队列处于暂停；检查「自动派发」勾选状态 |
-| 没有提示音 | 浏览器自动播放限制，必须先点一次「测试音效」或手动勾选「声音」解锁 AudioContext |
-| 没有桌面通知 | 需要手动勾选「通知」并授权；被拒绝后不会重复弹窗 |
+| No drawer appears | check the ComfyUI log for `[ComfyUI-RH-TaskQueue] registered /rh_queue/* routes`; without it the frontend still loads but the duration archive does not work |
+| The drawer says *Duration store not ready* | `/rh_queue/health` is not reachable - check that the plugin folder is under `custom_nodes` and that ComfyUI was restarted |
+| The header says *Legacy mode* | this ComfyUI has no `/api/jobs`, so the plugin fell back to `/queue` + `/history` |
+| Tasks stay in *Plugin queue* | the pre-submit limit is used up, or auto dispatch is switched off |
+| No chime | browsers block audio until the user interacts - press *Test sound* once |
+| No desktop notification | notifications have to be enabled and granted; a denied permission is not asked again |
+| The run button is missing | the button is inserted next to ComfyUI's own run button; if ComfyUI re-renders the toolbar, the plugin puts it back automatically |
+
+---
+
+## License
+
+[MIT](LICENSE) - Copyright (c) 2026 caramos2.
+
+In plain words: anyone may use, copy, modify, merge, publish, distribute,
+sub-license and sell this software, as long as the copyright notice and the
+license text are kept. The software is provided **as is**, without warranty of
+any kind - the authors are not liable for any claim, damage or other
+liability arising from the use of it.
+
+See [NOTICE.md](NOTICE.md) for the third-party notices. **This project
+contains no third-party code**: everything was written for it, including the
+SHA-256 implementation in `web/core/fingerprint.js`, which follows the
+public FIPS 180-4 specification.
+
+## Acknowledgements
+
+- [ComfyUI](https://github.com/comfyanonymous/ComfyUI) - the host application.
+  This plugin is not affiliated with it.
+- The workflow duration archive idea came from the RunningHub task panel, which
+  this plugin imitates in spirit but not in code.

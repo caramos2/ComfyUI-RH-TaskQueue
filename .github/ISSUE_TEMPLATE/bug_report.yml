@@ -1,0 +1,70 @@
+name: Bug report
+description: Something in the plugin does not behave as documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        Please fill in as much as you can - a reproduction is worth more than
+        a guess about the cause.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you see, and what did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Starting from a freshly started ComfyUI, what do you do?
+      placeholder: |
+        1. Start ComfyUI ...
+        2. Open the drawer ...
+        3. Press the run button ...
+    validations:
+      required: true
+
+  - type: input
+    id: comfyui-version
+    attributes:
+      label: ComfyUI version
+      placeholder: 0.45.0
+    validations:
+      required: true
+
+  - type: input
+    id: frontend-version
+    attributes:
+      label: Frontend version
+      description: Shown in the ComfyUI menu bar, or in the browser console.
+      placeholder: 1.58.5
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: How did you install the plugin?
+      options:
+        - git clone
+        - manual copy
+        - other
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and browser
+      placeholder: Windows 11, Chrome 131
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: The ComfyUI startup log and the browser console help a lot.
+      render: shell

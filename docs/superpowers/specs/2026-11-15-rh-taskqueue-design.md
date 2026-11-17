@@ -12,7 +12,7 @@
 
 | 项 | 实测值 | 证据 |
 |---|---|---|
-| ComfyUI 根目录 | `C:\Users\prett\Desktop\gamehole\ComfyUI-WorkFisher-V2\ComfyUI` | 目录实况 |
+| ComfyUI 根目录 | `<ComfyUI>` | 目录实况 |
 | 后端版本 | `comfyui_version.__version__ = "0.45.0"` | comfyui_version.py |
 | 后端 git | `4d64a8bc0`（2026-11-11，FRONT-3775） | `git log -1` |
 | 前端 | `comfyui-frontend-package 1.58.5` | site-packages dist-info |
@@ -222,7 +222,7 @@ signature = SHA256( canonical_json( normalize(api_prompt) ) )
 
 ## 9. 安装与运行
 
-- 仓库位置：`C:\Users\prett\Desktop\minimax code work\ComfyUI-RH-TaskQueue`（git init，`data/` 进 .gitignore）。
+- 仓库位置：`<repo>`（git init，`data/` 进 .gitignore）。
 - 安装位置：`<ComfyUI>\custom_nodes\ComfyUI-RH-TaskQueue`。
 - 依赖：**零第三方依赖**（后端只用 stdlib sqlite3/aiohttp 路由；前端只用浏览器原生 API）。
 - 启用后新增路由前缀 `/rh_queue/`，前端在 UI 右侧出现可收起抽屉。

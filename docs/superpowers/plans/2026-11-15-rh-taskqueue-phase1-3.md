@@ -13,13 +13,13 @@
 - 零第三方依赖：后端只用 stdlib `sqlite3`/`aiohttp`；前端只用浏览器原生 API。
 - 不修改 ComfyUI 核心源码（`execution.py` / `main.py` / `server.py`）。
 - 不劫持 `app.queuePrompt`；原生 Queue Prompt 按钮行为保持不变。
-- 插件源码仓库在 `C:\Users\prett\Desktop\minimax code work\ComfyUI-RH-TaskQueue`；安装副本在 `<ComfyUI>\custom_nodes\ComfyUI-RH-TaskQueue`。
+- 插件源码仓库在 `<repo>`；安装副本在 `<ComfyUI>\custom_nodes\ComfyUI-RH-TaskQueue`。
 - 「预提交上限」默认 1，范围 1-8；**不得**描述为单实例 GPU 并行数。
 - 提交时刻 ≠ 执行起始时刻，二者必须分别记录（设计 §4 铁律）。
 - 后端时间戳为 ms epoch；前端时间戳统一 ms。
 - 所有输出媒体 URL 用 `/view?filename=&subfolder=&type=` 构造，禁止拼磁盘路径。
 - 子模块 .js 不得有 default 导出、不得调用 `app.registerExtension`（避免被前端当扩展入口重复执行）。
-- 本机 `python.exe` = `C:\Users\prett\Desktop\gamehole\ComfyUI-WorkFisher-V2\python\python.exe`（测试与运行均用它）。
+- 本机 `python.exe` = `<python>\python.exe`（测试与运行均用它）。
 
 ---
 
@@ -556,11 +556,11 @@ git commit -m "feat: extension entry wiring drawer, queue manager and event brid
 
 - [ ] **Step 1: 安装到 custom_nodes**
 
-在 `C:\Users\prett\Desktop\gamehole\ComfyUI-WorkFisher-V2\ComfyUI\custom_nodes` 下创建指向工作区的目录联接（`New-Item -ItemType Junction`），使改一处即生效，避免复制漂移。
+在 `<ComfyUI>\custom_nodes` 下创建指向工作区的目录联接（`New-Item -ItemType Junction`），使改一处即生效，避免复制漂移。
 
 - [ ] **Step 2: 启动 ComfyUI**
 
-用 `..\python\python.exe -s ComfyUI\main.py --windows-standalone-build --port 8188`，cwd = 启动器根目录。以后台任务启动，日志写到 `C:\Users\prett\.minimax\tools\rh-taskqueue-comfy.log`（**不得**写进共享工作区）。
+用 `..\python\python.exe -s ComfyUI\main.py --windows-standalone-build --port 8188`，cwd = 启动器根目录。以后台任务启动，日志写到 `<tools>\rh-taskqueue-comfy.log`（**不得**写进共享工作区）。
 
 - [ ] **Step 3: V1 health**
 

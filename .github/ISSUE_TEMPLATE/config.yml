@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question or discussion
+    url: https://github.com/caramos2/ComfyUI-RH-TaskQueue/discussions
+    about: Ask a question or start a discussion instead of an issue.
+  - name: Security report
+    url: https://github.com/caramos2/ComfyUI-RH-TaskQueue/security/advisories/new
+    about: Report a vulnerability privately - please do not open a public issue.
