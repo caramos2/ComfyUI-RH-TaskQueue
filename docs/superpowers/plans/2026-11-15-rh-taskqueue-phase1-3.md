@@ -643,7 +643,7 @@ git commit -m "test: minimal sdxl output preview and browser ui verification"
 
 - [ ] **Step 2: 停掉 ComfyUI，释放 8188**
 
-关闭我启动的进程，确认 `netstat -ano | findstr :8188` 无输出，把启停权交回主人启动器。
+关闭验证期间启动的进程，确认 `netstat -ano | findstr :8188` 无输出，把启停权交回项目发起人的启动器。
 
 - [ ] **Step 3: 最终回归**
 
