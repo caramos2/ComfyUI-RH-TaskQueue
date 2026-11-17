@@ -11,6 +11,7 @@
  */
 
 import { serverUrl } from '../core/api_client.js';
+import { i18n as sharedI18n } from '../core/i18n.js';
 
 const TEXT_EXTENSIONS = ['.txt', '.md', '.json', '.csv', '.log'];
 
@@ -62,13 +63,13 @@ export function collectOutputItems(record) {
   return entries;
 }
 
-function linkElement(item, label) {
+function linkElement(item, label, t) {
   const link = document.createElement('a');
   link.className = 'rh-tq-file';
   link.href = buildViewUrl(item);
   link.target = '_blank';
   link.rel = 'noopener';
-  link.textContent = label || item.filename || '打开文件';
+  link.textContent = label || item.filename || t('output.openFile');
   return link;
 }
 
@@ -101,7 +102,9 @@ export function findFirstOutputFile(record) {
  * Render the output section of a task card.
  * Returns null when the task has no outputs at all.
  */
-export function renderOutputPreview(record) {
+export function renderOutputPreview(record, i18n) {
+  const translator = i18n || sharedI18n;
+  const t = (key, params) => translator.t(key, params);
   const entries = collectOutputItems(record);
   const container = document.createElement('div');
   container.className = 'rh-tq-outputs';
@@ -115,14 +118,14 @@ export function renderOutputPreview(record) {
       if (preview.truncated) {
         const note = document.createElement('div');
         note.className = 'rh-tq-sig';
-        note.textContent = '（文本已截断）';
+        note.textContent = t('output.textTruncated');
         box.appendChild(note);
       }
       container.appendChild(box);
       return container;
     }
     if (preview && preview.filename) {
-      container.appendChild(linkElement(preview, preview.filename));
+      container.appendChild(linkElement(preview, preview.filename, t));
       return container;
     }
     return null;
@@ -178,19 +181,23 @@ export function renderOutputPreview(record) {
         others.appendChild(box);
       }
       if (item.filename) {
-        others.appendChild(linkElement(item, item.filename || '文本输出'));
+        others.appendChild(linkElement(item, item.filename || t('output.textOutput'), t));
       }
       continue;
     }
 
     if (type === '3d') {
-      others.appendChild(linkElement(item, '3D: ' + (item.filename || '未命名')));
+      others.appendChild(linkElement(item, '3D: ' + (item.filename || t('output.unnamed')), t));
       continue;
     }
 
     // Unknown media type: keep the entry, never drop it.
     others.appendChild(
-      linkElement(item, (item.filename || '未知类型输出') + (item.format ? ' (' + item.format + ')' : '')),
+      linkElement(
+        item,
+        (item.filename || t('output.unknownType')) + (item.format ? ' (' + item.format + ')' : ''),
+        t,
+      ),
     );
   }
 

@@ -8,28 +8,29 @@
 import { STATUS, formatDuration, formatTime } from '../core/task_model.js';
 import { findFirstOutputFile, renderOutputPreview } from './output_preview.js';
 import { timingText } from './timing_text.js';
+import { i18n as sharedI18n } from '../core/i18n.js';
 
 export { timingText };
 
-const STATUS_LABEL = {
-  [STATUS.PLUGIN_QUEUED]: '插件排队',
-  [STATUS.BACKEND_PENDING]: '后端待执行',
-  [STATUS.RUNNING]: '运行中',
-  [STATUS.COMPLETED]: '已完成',
-  [STATUS.FAILED]: '失败',
-  [STATUS.CANCELLED]: '已中止',
-  [STATUS.SUBMIT_FAILED]: '提交失败',
+const STATUS_LABEL_KEY = {
+  [STATUS.PLUGIN_QUEUED]: 'card.status.pluginQueued',
+  [STATUS.BACKEND_PENDING]: 'card.status.backendPending',
+  [STATUS.RUNNING]: 'card.status.running',
+  [STATUS.COMPLETED]: 'card.status.completed',
+  [STATUS.FAILED]: 'card.status.failed',
+  [STATUS.CANCELLED]: 'card.status.cancelled',
+  [STATUS.SUBMIT_FAILED]: 'card.status.submitFailed',
 };
 
-function errorText(record) {
+function errorText(record, t) {
   const error = record.error;
   if (!error) return '';
   if (typeof error === 'string') return error;
   const parts = [];
   if (error.exception_message) parts.push(error.exception_message);
   if (error.exception_type) parts.push('(' + error.exception_type + ')');
-  if (error.node_type) parts.push('节点 ' + error.node_type);
-  if (!parts.length) return '未知错误';
+  if (error.node_type) parts.push(t('card.error.node', { type: error.node_type }));
+  if (!parts.length) return t('card.error.unknown');
   return parts.join(' ');
 }
 
@@ -38,6 +39,8 @@ export function renderTaskCard(record, ctx) {
   const onAction = context.onAction || (() => {});
   const estimate = context.estimate || null;
   const now = context.now || Date.now();
+  const i18n = context.i18n || sharedI18n;
+  const t = (key, params) => i18n.t(key, params);
 
   const card = document.createElement('div');
   card.className = 'rh-tq-card rh-tq-card--' + record.status;
@@ -48,34 +51,36 @@ export function renderTaskCard(record, ctx) {
 
   const badge = document.createElement('span');
   badge.className = 'rh-tq-badge';
-  badge.textContent = STATUS_LABEL[record.status] || record.status;
+  const statusKey = STATUS_LABEL_KEY[record.status];
+  badge.textContent = statusKey ? t(statusKey) : record.status;
   head.appendChild(badge);
 
   const title = document.createElement('span');
   title.className = 'rh-tq-title';
-  title.textContent = record.workflowName || '未命名工作流';
+  title.textContent = record.workflowName || t('card.untitled');
   title.title = record.workflowName || record.id;
   head.appendChild(title);
   card.appendChild(head);
 
   const meta = document.createElement('div');
   meta.className = 'rh-tq-meta';
-  meta.textContent = '创建 ' + formatTime(record.createdAt) + ' · ' + String(record.id).slice(0, 8);
+  meta.textContent = t('card.created') + formatTime(record.createdAt) + ' · ' + String(record.id).slice(0, 8);
   card.appendChild(meta);
 
   const timing = document.createElement('div');
   timing.className = 'rh-tq-timing';
   timing.dataset.rhTqTiming = '1';
-  timing.textContent = timingText(record, now);
+  timing.textContent = timingText(record, now, t);
   card.appendChild(timing);
 
   if (estimate && estimate.found) {
     const ref = document.createElement('div');
     ref.className = 'rh-tq-ref';
-    const last = formatDuration(estimate.last_duration);
-    const avg = formatDuration(estimate.avg_duration);
-    ref.textContent =
-      '上次耗时 ' + last + ' · 平均 ' + avg + '（' + estimate.sample_count + ' 次）';
+    ref.textContent = t('card.reference', {
+      last: formatDuration(estimate.last_duration),
+      avg: formatDuration(estimate.avg_duration),
+      count: estimate.sample_count,
+    });
     card.appendChild(ref);
   }
 
@@ -83,11 +88,11 @@ export function renderTaskCard(record, ctx) {
   if (outputsCount) {
     const out = document.createElement('div');
     out.className = 'rh-tq-out';
-    out.textContent = '输出 ' + outputsCount + ' 项';
+    out.textContent = t('card.outputs', { count: outputsCount });
     card.appendChild(out);
   }
 
-  const message = errorText(record);
+  const message = errorText(record, t);
   if (message) {
     const error = document.createElement('div');
     error.className = 'rh-tq-error';
@@ -95,7 +100,7 @@ export function renderTaskCard(record, ctx) {
     card.appendChild(error);
   }
 
-  const preview = renderOutputPreview(record);
+  const preview = renderOutputPreview(record, i18n);
   if (preview) card.appendChild(preview);
 
   const actions = document.createElement('div');
@@ -110,7 +115,7 @@ export function renderTaskCard(record, ctx) {
   if (canCancel) {
     const cancel = document.createElement('button');
     cancel.className = 'rh-tq-btn rh-tq-btn--danger';
-    cancel.textContent = '取消';
+    cancel.textContent = t('card.action.cancel');
     cancel.addEventListener('click', () => onAction('cancel', record));
     actions.appendChild(cancel);
   }
@@ -119,8 +124,8 @@ export function renderTaskCard(record, ctx) {
   if (revealTarget) {
     const reveal = document.createElement('button');
     reveal.className = 'rh-tq-btn';
-    reveal.textContent = '打开文件夹';
-    reveal.title = '在文件管理器中定位该输出文件';
+    reveal.textContent = t('card.action.reveal');
+    reveal.title = t('card.action.revealTitle');
     reveal.addEventListener('click', () =>
       onAction('reveal', { id: record.id, target: revealTarget }),
     );
@@ -130,7 +135,7 @@ export function renderTaskCard(record, ctx) {
   if (record.status === STATUS.FAILED && record.error && record.error.traceback) {
     const trace = document.createElement('button');
     trace.className = 'rh-tq-btn';
-    trace.textContent = '查看堆栈';
+    trace.textContent = t('card.action.traceback');
     trace.addEventListener('click', () => {
       const box = card.querySelector('.rh-tq-error');
       if (box) box.textContent = record.error.traceback;

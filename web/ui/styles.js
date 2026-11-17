@@ -56,7 +56,9 @@ export const CSS = `
 
 .rh-tq-panel {
   position: fixed;
-  top: 8px;
+  /* The offset is measured at runtime so the panel starts below
+     ComfyUI's own toolbar row (queue button + plugin run button). */
+  top: var(--rh-tq-top, 8px);
   right: 8px;
   bottom: 8px;
   width: var(--rh-tq-width, 380px);

@@ -1,3 +1,5 @@
+import { i18n as sharedI18n } from './i18n.js';
+
 /**
  * Sound and desktop notifications.
  *
@@ -56,8 +58,9 @@ export class ChimeGate {
 }
 
 export class Notifier {
-  constructor(settings) {
+  constructor(settings, i18n) {
     this.settings = settings;
+    this.i18n = i18n || sharedI18n;
     this.context = null;
     this.notified = new Set();
     this.chimeGate = new ChimeGate();
@@ -186,6 +189,11 @@ export class Notifier {
     return Notification.permission;
   }
 
+  /** Translate through the shared language layer. */
+  t(key, params) {
+    return this.i18n.t(key, params);
+  }
+
   /**
    * Report a finished task. Returns true when something was actually
    * announced, which keeps the caller from announcing it twice.
@@ -196,8 +204,8 @@ export class Notifier {
     this.markNotified(id);
     this.playChime();
     this.notify(
-      'ComfyUI 任务已完成',
-      '耗时 ' + durationText + ' · 输出 ' + outputCount + ' 项',
+      this.t('notify.successTitle'),
+      this.t('notify.successBody', { duration: durationText, count: outputCount }),
       'rh-taskqueue-' + id,
     );
     return true;
@@ -209,8 +217,11 @@ export class Notifier {
     this.markNotified(id);
     if (this.settings.get('notifyOnFailure')) {
       this.notify(
-        'ComfyUI 任务执行失败',
-        '耗时 ' + durationText + ' · ' + (message || '未知错误'),
+        this.t('notify.failureTitle'),
+        this.t('notify.failureBody', {
+          duration: durationText,
+          message: message || this.t('notify.unknownError'),
+        }),
         'rh-taskqueue-' + id,
       );
     }

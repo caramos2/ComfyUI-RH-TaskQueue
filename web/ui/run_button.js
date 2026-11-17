@@ -11,6 +11,8 @@
  * shadow root styles - it brings its own.
  */
 
+import { i18n as sharedI18n } from '../core/i18n.js';
+
 const STYLE_ID = 'rh-taskqueue-run-button-style';
 const TOOLTIP_DELAY_MS = 700;
 const HIDE_DELAY_MS = 120;
@@ -78,33 +80,36 @@ const CSS = `
 `;
 
 /** The tooltip title. Kept separate so it can be tested without a DOM. */
-export function runButtonTooltipTitle() {
-  return '插件运行（冻结参数）';
+export function runButtonTooltipTitle(translate) {
+  const t = translate || ((key, params) => sharedI18n.t(key, params));
+  return t('run.tipTitle');
 }
 
 /** The tooltip body. Kept separate so it can be tested without a DOM. */
-export function runButtonTooltipBody() {
-  return [
-    '点击时把当前工作流参数冻结成一份快照，存进任务队列。',
-    '之后无论怎么改画布，排队中的任务仍按各自那次编辑的参数执行。',
-    '',
-    '它走插件自己的队列：按抽屉里的「预提交上限」逐个派发，排队情况在抽屉里可见、可取消，刷新页面也不丢。',
-    '（原生「运行」是直接交给 ComfyUI 排队。）',
-  ].join('\n');
+export function runButtonTooltipBody(translate) {
+  const t = translate || ((key, params) => sharedI18n.t(key, params));
+  return t('run.tipBody');
 }
 
 export class RunButton {
-  constructor({ onRun, getBadge } = {}) {
+  constructor({ onRun, getBadge, i18n, onInsert } = {}) {
     this.onRun = onRun || (() => {});
     this.getBadge = getBadge || (() => 0);
+    this.onInsert = onInsert || (() => {});
+    this.i18n = i18n || sharedI18n;
     this.button = null;
     this.tooltip = null;
     this.observer = null;
     this.showTimer = null;
     this.hideTimer = null;
     this.flashTimer = null;
-    this.defaultLabel = '运行';
+    this.unsubscribe = null;
+    this.defaultLabel = this.t('run.label');
     this.busy = false;
+  }
+
+  t(key, params) {
+    return this.i18n.t(key, params);
   }
 
   mount() {
@@ -115,6 +120,8 @@ export class RunButton {
     this._insert();
     this._observe();
     this.updateBadge();
+    // A language change rewrites the label and the tooltip in place.
+    this.unsubscribe = this.i18n.subscribe(() => this.applyLanguage());
     return true;
   }
 
@@ -124,6 +131,8 @@ export class RunButton {
     if (this.showTimer) clearTimeout(this.showTimer);
     if (this.hideTimer) clearTimeout(this.hideTimer);
     if (this.flashTimer) clearTimeout(this.flashTimer);
+    if (this.unsubscribe) this.unsubscribe();
+    this.unsubscribe = null;
     if (this.button && this.button.parentNode) this.button.parentNode.removeChild(this.button);
     if (this.tooltip && this.tooltip.parentNode) this.tooltip.parentNode.removeChild(this.tooltip);
     this.button = null;
@@ -147,10 +156,10 @@ export class RunButton {
     tip.hidden = true;
     const title = document.createElement('div');
     title.className = 'rh-tq-run-tip__title';
-    title.textContent = runButtonTooltipTitle();
+    title.textContent = runButtonTooltipTitle((key, params) => this.t(key, params));
     const body = document.createElement('div');
     body.className = 'rh-tq-run-tip__body';
-    body.textContent = runButtonTooltipBody();
+    body.textContent = runButtonTooltipBody((key, params) => this.t(key, params));
     tip.appendChild(title);
     tip.appendChild(body);
     document.body.appendChild(tip);
@@ -162,7 +171,7 @@ export class RunButton {
     button.type = 'button';
     button.className = 'rh-tq-run-btn';
     button.dataset.testid = 'rh-taskqueue-run-button';
-    button.setAttribute('aria-label', runButtonTooltipTitle());
+    button.setAttribute('aria-label', runButtonTooltipTitle((key, params) => this.t(key, params)));
 
     const icon = document.createElement('span');
     icon.className = 'rh-tq-run-btn__icon';
@@ -209,6 +218,9 @@ export class RunButton {
     }
     if (this.button.parentNode) this.button.parentNode.removeChild(this.button);
     anchor.insertAdjacentElement('afterend', this.button);
+    // The drawer measures the button to stay clear of the toolbar, so it
+    // has to know when the button moved.
+    this.onInsert();
     return true;
   }
 
@@ -239,10 +251,11 @@ export class RunButton {
     if (this.button) this.button.dataset.busy = '1';
     try {
       const result = await this.onRun();
-      const message = result && result.message ? result.message : '已加入队列';
-      this.flash(message);
+      const key = result && result.messageKey ? result.messageKey : 'run.flash.queuedDefault';
+      const params = (result && result.params) || null;
+      this.flash(this.t(key, params));
     } catch (err) {
-      this.flash('提交失败');
+      this.flash(this.t('run.flash.failed'));
       console.warn('[rh_queue] run button failed:', err && err.message);
     } finally {
       this.busy = false;
@@ -260,6 +273,25 @@ export class RunButton {
       this.label.textContent = this.defaultLabel;
       this.flashTimer = null;
     }, duration);
+  }
+
+  /** Rewrite the label and the tooltip after a language change. */
+  applyLanguage() {
+    this.defaultLabel = this.t('run.label');
+    // A flash message stays as it is until it times out.
+    if (this.label && !this.flashTimer) this.label.textContent = this.defaultLabel;
+    if (this.button) {
+      this.button.setAttribute(
+        'aria-label',
+        runButtonTooltipTitle((key, params) => this.t(key, params)),
+      );
+    }
+    if (this.tooltip) {
+      const title = this.tooltip.querySelector('.rh-tq-run-tip__title');
+      const body = this.tooltip.querySelector('.rh-tq-run-tip__body');
+      if (title) title.textContent = runButtonTooltipTitle((key, params) => this.t(key, params));
+      if (body) body.textContent = runButtonTooltipBody((key, params) => this.t(key, params));
+    }
   }
 
   /** The number of tasks waiting in the plugin's own queue. */

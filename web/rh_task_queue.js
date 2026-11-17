@@ -24,6 +24,7 @@ import { LegacyApiAdapter } from './adapters/legacy_api.js';
 import { Drawer } from './ui/drawer.js';
 import { RunButton } from './ui/run_button.js';
 import { computeSignature } from './core/fingerprint.js';
+import { i18n } from './core/i18n.js';
 import { freezeSnapshot } from './core/snapshot.js';
 import {
   buildTitleIndex,
@@ -77,6 +78,11 @@ class TaskQueueController {
     this.verifyPending = new Set();
   }
 
+  /** Translate through the shared language layer. */
+  t(key, params) {
+    return i18n.t(key, params);
+  }
+
   async init(comfyApp) {
     this.app = comfyApp;
 
@@ -95,22 +101,21 @@ class TaskQueueController {
       const legacyAdapter = new LegacyApiAdapter(this.apiClient);
       this.adapter = (await legacyAdapter.supported()) ? legacyAdapter : jobsAdapter;
     }
-    this.drawer.setMode(this.adapter.mode === 'jobs_api' ? 'Jobs API 模式' : 'Legacy 模式');
+    this.drawer.setMode(
+      this.adapter.mode === 'jobs_api' ? 'drawer.mode.jobsApi' : 'drawer.mode.legacy',
+    );
 
     try {
       const health = await this.apiClient.health();
       if (health && health.caps) {
-        const parts = [];
-        if (health.caps.jobs_api) parts.push('Jobs API');
-        if (health.caps.legacy_api) parts.push('Legacy');
-        if (health.caps.cancel_api) parts.push('可取消');
+        const cancellable = Boolean(health.caps.cancel_api);
         this.drawer.setMode(
-          (this.adapter.mode === 'jobs_api' ? 'Jobs API 模式' : 'Legacy 模式') +
-            (parts.includes('可取消') ? ' · 可取消' : ''),
+          this.adapter.mode === 'jobs_api' ? 'drawer.mode.jobsApi' : 'drawer.mode.legacy',
+          { cancellable },
         );
       }
     } catch (err) {
-      this.drawer.setMode('耗时库未就绪');
+      this.drawer.setMode('drawer.mode.storeNotReady');
     }
 
     this.queueManager = new QueueManager({
@@ -126,8 +131,12 @@ class TaskQueueController {
     this.runButton = new RunButton({
       onRun: () => this.runFromToolbar(),
       getBadge: () => (this.queueManager ? this.queueManager.getLocalTasks().length : 0),
+      onInsert: () => this.updateDrawerTop(),
     });
     this.runButton.mount();
+    this.updateDrawerTop();
+    this.onResize = () => this.updateDrawerTop();
+    window.addEventListener('resize', this.onResize);
 
     this.eventBridge = new EventBridge({
       onEvent: (type, data) => this.handleEvent(type, data),
@@ -475,12 +484,12 @@ class TaskQueueController {
   async snapshotCurrentGraph() {
     const comfyApp = this.app;
     if (!comfyApp || typeof comfyApp.graphToPrompt !== 'function') {
-      throw new Error('无法访问当前工作流');
+      throw new Error(this.t('error.workflowUnreachable'));
     }
     const result = await comfyApp.graphToPrompt();
     const output = result && result.output;
     if (!output || !Object.keys(output).length) {
-      throw new Error('当前工作流为空，无法加入队列');
+      throw new Error(this.t('error.workflowEmpty'));
     }
     // Freeze the parameters: a queued task must keep the values it had
     // when it was queued, no matter how the canvas changes afterwards.
@@ -494,8 +503,22 @@ class TaskQueueController {
       titleFromWorkflowFile(active) ||
       lookupTitle(this.workflowTitles, workflow && workflow.id) ||
       describePrompt(prompt) ||
-      '未命名工作流';
+      this.t('card.untitled');
     return { prompt, workflow, name };
+  }
+
+  /**
+   * Keep the drawer clear of ComfyUI's toolbar row.
+   *
+   * The toolbar carries both ComfyUI's own queue button and the plugin's run
+   * button. The drawer panel lives on the right edge, so it has to start
+   * below that row - otherwise it swallows the clicks on both buttons.
+   */
+  updateDrawerTop() {
+    if (!this.drawer || !this.runButton || !this.runButton.button) return;
+    const rect = this.runButton.button.getBoundingClientRect();
+    if (!rect || !rect.height) return;
+    this.drawer.setTopOffset(rect.bottom + 8);
   }
 
   /**
@@ -511,7 +534,8 @@ class TaskQueueController {
     this.render();
     const waiting = this.queueManager.getLocalTasks().length;
     return {
-      message: waiting > 0 ? '已排队 ' + waiting : '已提交',
+      messageKey: waiting > 0 ? 'run.flash.queued' : 'run.flash.submitted',
+      params: waiting > 0 ? { count: waiting } : null,
       record,
     };
   }
@@ -553,6 +577,10 @@ class TaskQueueController {
       case 'test-sound':
         // The test button always sounds, even inside the merge window.
         this.notifier.playChime({ force: true });
+        break;
+      case 'language':
+        // The drawer and the run button redraw themselves on the change.
+        i18n.setLanguage(payload);
         break;
       case 'cancel': {
         try {
