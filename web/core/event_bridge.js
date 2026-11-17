@@ -17,10 +17,14 @@ import { resolveApiInstance } from './api_client.js';
 
 const START_EVENT = 'execution_start';
 const TERMINAL_EVENTS = ['execution_success', 'execution_error', 'execution_interrupted'];
+// The frontend reports a null status when the connection to the backend is
+// gone. That is the signal the queue needs to give its leader lease back.
+const STATUS_EVENT = 'status';
 
 export class EventBridge {
-  constructor({ onEvent }) {
+  constructor({ onEvent, onStatus }) {
     this.onEvent = onEvent || (() => {});
+    this.onStatus = onStatus || (() => {});
     this.instance = null;
     this.handlers = [];
   }
@@ -33,13 +37,15 @@ export class EventBridge {
     const bind = (type) => {
       const handler = (event) => {
         const detail = event && event.detail !== undefined ? event.detail : event;
-        this.onEvent(type, detail);
+        if (type === STATUS_EVENT) this.onStatus(detail);
+        else this.onEvent(type, detail);
       };
       this.instance.addEventListener(type, handler);
       this.handlers.push({ type, handler });
     };
     bind(START_EVENT);
     for (const type of TERMINAL_EVENTS) bind(type);
+    bind(STATUS_EVENT);
     return true;
   }
 

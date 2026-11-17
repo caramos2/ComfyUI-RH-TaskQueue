@@ -41,6 +41,9 @@
 | V17 | **打开文件夹**（新功能） | **真实点击**卡片「打开文件夹」 | 请求打到后端并定位文件 | 真实点击 → `POST /rh_queue/reveal` → **200**；后端 `explorer /select,` 定位到输出文件；路径穿越请求 → **400** | ✅ |
 | V18 | 取消卡片文案 | 从未启动就被取消的任务 | 不显示「耗时 --:--」 | 卡片显示「已中止」（无耗时字段），符合「它根本没跑过」的事实 | ✅ |
 | V19 | **多任务同时完成不爆音** | 浏览器内连发 5 个瞬时完成任务，实测振荡器数量 | 只响一声，不得叠加 | 5 个任务全部完成（`notified` 命中 5 次）；AudioContext 实际创建振荡器 **仅 +2 个**（= 一声），合并计数 4；对照：强行放行 5 声则 **+10 个**（5 声叠加）；共享限幅器只建 1 个；`AudioContext.state='running'`，声音链路是活的 | ✅ |
+| V20 | **插件自己的「运行」键** | 真实点击 ×3，每次之间改提示词 | 位置正确 + 排队任务各跑各的参数 | 按钮挂在原生 `queue-button-group` **右侧**（原生组 x=587~749，插件键 x=757~848，同一父容器）；三次真实点击后输出文件依次为 `AAAA-alpha` / `BBBB-bravo` / `CCCC-charlie`，**各自用自己那次编辑的参数**；闪现文案「已排队 1」→「已提交」 | ✅ |
+| V21 | **长悬停说明** | 悬停 1.2s / 移开 | 延时出现说明，移开即收 | 浮层 340×184 出现在按钮下方（y=140 > 按钮底 132），标题「插件运行（冻结参数）」+ 四段说明；移开鼠标 0.4s 后 `hidden=true` | ✅ |
+| V22 | **原生「运行」是否冻结**（澄清项） | 服务端路径 + 前端按钮各测一轮 | 弄清事实再决定做什么 | 服务端：HTTP 连发 3 个不同提示词 → 输出 `AAAA-alpha`/`BBBB-bravo`/`CCCC-charlie`；前端：真实点击原生「运行」三次、每次改提示词 → 输出 `AAAA-alpha`/`BBBB-bravo`/`CCCC-charlie`。**原生按钮的参数本来就是冻结的**（`server.py` 的 `/prompt` 把 prompt 原样 `put` 进队列，执行时不再读画布） | ✅ |
 
 ---
 
@@ -62,6 +65,7 @@
 | B12 | 卡片全是「未命名工作流」（主人实测反馈） | `/api/jobs` **不返回任何名字字段**（只有 `id/status/priority/create_time/execution_*/outputs_count/preview_output/workflow_id`）；前端图 JSON 自身也没有 name/title（实测 keys：`id/revision/last_node_id/…/extra/version/seed_widgets`） | 三级回落：① 前端 active workflow / 工作流库的文件名 → ② **后端扫 `user/default/workflows` 建 id→标题映射**（`GET /rh_queue/workflow_titles`，60s 缓存；文件顶层 `id` 即后端 `workflow_id`）→ ③ `describePrompt`（ckpt 名 + 主要节点类型）兜底 |
 | B13 | **运行中任务时间停在 `--:--`**（主人实测反馈） | 两个独立成因：① 服务端 `execution_start` 是**定向事件**——`execution.py` 里 `broadcast=False`，只发给「提交该任务的 client_id」。此前用 PowerShell 以 `client_id=rh-timer-probe` 提交，那个 id **没有对应 socket**，事件被静默丢弃，前端永远收不到；② 插件兜底 `restoreRunningStart` 只在「记录由非 running 变成 running」时才补起始时刻，**首次见到就是 running 的任务永远拿不到起始时刻** | ① 直接采用事件自带的**服务端权威 timestamp**（`add_message` 每次都盖 `int(time.time()*1000)`），本地时钟仅作兜底；② 兜底改为「首次见到 running 就按当下打点」，抽成纯函数 `resolveRunningStart` + 4 项单测；③ 终态任务不被迟到的开始事件回退成 running |
 | B14 | **排队中点「取消」不同步**（主人实测反馈） | ComfyUI `cancel_job()` 对 pending 任务走 `dequeue`：**从不进 history**。于是该作业从 `/api/jobs` 列表消失、`GET /api/jobs/{id}` 返 404，后端再也不会汇报它 → 插件下次同步看不到它 → 卡片永久卡在「后端待执行」 | API 返回 `cancelled===true` 时**立即**本地标 CANCELLED，并调 `queueManager.markFinished` 释放预提交名额；`PLUGIN_QUEUED` 的「取消」= 从插件队列移除；文案上未跑过的任务不再显示「耗时 --:--」 |
+| B15 | **插件队列在多标签页下饿死**（做「运行」键时暴露） | 队列实体在**共享**的 IndexedDB，但每个标签页只认自己内存里的那份；而**只有持有 leader 租约的标签页负责派发**。于是：别的标签页入队的任务，leader 看不见 → 永远不派发；更糟的是，**后端已失联的旧标签页仍会每 2.5s 续租**，把活着的标签页彻底饿死（实测 `isLeader=false`，任务卡在「插件排队」） | ① leader 派发前先 `mergeFromStore()` 从共享存储合并待派任务；② 监听前端 `status` 事件，**为 null 即代表后端失联**，此时该标签页主动 `_releaseLease()` 让出租约；③ 提交成功时广播 `task-submitted`，其它标签页丢弃陈旧副本，卡片不再卡在「插件排队」 |
 
 > **教训**：V7–V10 全部通过调试钩子**程序化驱动 DOM** 验证，**一次真实鼠标点击都没做过**，所以整块 UI 的命中测试从没被覆盖。指针事件类缺陷只能靠真实输入派发发现，读 DOM 状态是看不出来的。
 >
@@ -70,6 +74,20 @@
 > **第三条教训（本轮最贵的一条）：验证请求的「身份」必须和服务端路由方式对齐。** B13 卡了两轮，根因不在插件而在验证方法：ComfyUI 的 `execution_start` 是发给「提交该任务的 client_id」那个 socket 的定向事件，而我一直用 PowerShell 以一个**没有 socket 的假 client_id` 提交任务 ⇒ 事件被服务端静默丢弃 ⇒ 插件当然收不到。** 换成「从页面自身提交」（同一个 client_id）后，事件立刻到位、计时当场走动。**排查「事件收不到」时，先问「这条消息在服务端是广播还是定向？目标身份是谁？我发起的请求用的那个身份吗？」**
 >
 > 第四条：ComfyUI 的**取消语义**是「移出队列、且不进历史」。所以「取消成功」的判据不能是「后端还会汇报它」——恰恰相反，成功之后后端就**永远不再提它**。插件必须在 API 返回 `cancelled===true` 的当下就自己落终态。
+
+---
+
+## 工具栏「运行」键（冻结参数）
+
+在原生「运行」键**右侧**加一个插件自己的「❄ 运行」键（绿色，与原生蓝色区分），长悬停 0.7s 给出说明。
+
+**它做什么**：点击瞬间把当前工作流 `graphToPrompt()` 的结果 **深拷贝冻结**（`structuredClone`），连同 workflow 一起存进插件队列。队列按抽屉里的「预提交上限」逐个派发给 ComfyUI。
+
+**为什么要自己写一个**：原生「运行」其实也是冻结的（V22 实测），但它把任务**直接**丢给 ComfyUI，插件管不着——排队情况在插件抽屉里看不到、不能取消、也不受预提交上限约束。插件这个键把快照留在本地（IndexedDB，刷新不丢），排队任务在抽屉里**可见、可取消**。
+
+**冻结在哪一层**：`freezeSnapshot()` 做深拷贝，画布之后怎么改都碰不到已入队的快照；快照随任务存进 IndexedDB，轮到它执行时提交的就是当初那份。
+
+实测（V20）：连点三次、每次改提示词 → 三个任务分别跑出 `AAAA-alpha` / `BBBB-bravo` / `CCCC-charlie`。
 
 ---
 

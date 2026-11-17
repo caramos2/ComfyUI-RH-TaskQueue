@@ -22,7 +22,9 @@ import { Notifier } from './core/notifier.js';
 import { JobsApiAdapter } from './adapters/jobs_api.js';
 import { LegacyApiAdapter } from './adapters/legacy_api.js';
 import { Drawer } from './ui/drawer.js';
+import { RunButton } from './ui/run_button.js';
 import { computeSignature } from './core/fingerprint.js';
+import { freezeSnapshot } from './core/snapshot.js';
 import {
   buildTitleIndex,
   describePrompt,
@@ -66,6 +68,7 @@ class TaskQueueController {
     this.detailRequested = new Set();
     this.adapter = null;
     this.drawer = null;
+    this.runButton = null;
     this.queueManager = null;
     this.eventBridge = null;
     this.pollTimer = null;
@@ -118,8 +121,20 @@ class TaskQueueController {
     });
     await this.queueManager.start();
 
+    // The plugin's own run button, right next to ComfyUI's. It freezes the
+    // canvas into a snapshot and hands that snapshot to the plugin queue.
+    this.runButton = new RunButton({
+      onRun: () => this.runFromToolbar(),
+      getBadge: () => (this.queueManager ? this.queueManager.getLocalTasks().length : 0),
+    });
+    this.runButton.mount();
+
     this.eventBridge = new EventBridge({
       onEvent: (type, data) => this.handleEvent(type, data),
+      onStatus: (status) => {
+        // A null status means the backend connection is gone.
+        if (this.queueManager) this.queueManager.setConnected(status !== null && status !== undefined);
+      },
     });
     this.eventBridge.start();
 
@@ -452,6 +467,7 @@ class TaskQueueController {
     this.drawer.records = list;
     this.drawer.stats = { running, pending, queued };
     this.drawer.render();
+    if (this.runButton) this.runButton.updateBadge();
   }
 
   // -- actions ------------------------------------------------------------
@@ -466,7 +482,10 @@ class TaskQueueController {
     if (!output || !Object.keys(output).length) {
       throw new Error('当前工作流为空，无法加入队列');
     }
-    const workflow = (result && result.workflow) || null;
+    // Freeze the parameters: a queued task must keep the values it had
+    // when it was queued, no matter how the canvas changes afterwards.
+    const prompt = freezeSnapshot(output);
+    const workflow = freezeSnapshot((result && result.workflow) || null);
     // The graph carries no title of its own: the frontend keeps the title in
     // its workflow store, keyed by the graph id.
     const svc = this.app.extensionManager && this.app.extensionManager.workflow;
@@ -474,9 +493,27 @@ class TaskQueueController {
     const name =
       titleFromWorkflowFile(active) ||
       lookupTitle(this.workflowTitles, workflow && workflow.id) ||
-      describePrompt(output) ||
+      describePrompt(prompt) ||
       '未命名工作流';
-    return { prompt: output, workflow, name };
+    return { prompt, workflow, name };
+  }
+
+  /**
+   * The toolbar run button.
+   *
+   * The canvas is frozen into a snapshot and the snapshot is queued, so the
+   * task runs with the parameters it had when it was pressed - not with the
+   * ones the canvas happens to carry when its turn comes.
+   */
+  async runFromToolbar() {
+    const snapshot = await this.snapshotCurrentGraph();
+    const record = await this.queueManager.enqueue(snapshot);
+    this.render();
+    const waiting = this.queueManager.getLocalTasks().length;
+    return {
+      message: waiting > 0 ? '已排队 ' + waiting : '已提交',
+      record,
+    };
   }
 
   async handleAction(action, payload) {

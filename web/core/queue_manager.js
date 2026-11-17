@@ -37,11 +37,25 @@ export class QueueManager {
     this.tabId = makeId();
     this.timer = null;
     this.channel = null;
+    // Whether this tab can still reach the backend. A tab that lost the
+    // server must not keep the leader lease, or the other tabs starve.
+    this.connected = true;
     try {
       if (typeof BroadcastChannel !== 'undefined') {
         this.channel = new BroadcastChannel(CHANNEL_NAME);
         this.channel.onmessage = (event) => {
-          if (event.data && event.data.type === 'state-changed') this.onChange();
+          const data = event.data;
+          if (!data) return;
+          if (data.type === 'state-changed') {
+            this.onChange();
+            return;
+          }
+          if (data.type === 'task-submitted') {
+            // Another tab took this task out of the shared queue. Drop our
+            // copy so the card does not stay stuck on "plugin queued".
+            if (data.id) this.records.delete(data.id);
+            this.onChange();
+          }
         };
       }
     } catch (err) {
@@ -77,6 +91,12 @@ export class QueueManager {
   }
 
   _heartbeat() {
+    // A tab that cannot reach the backend must give the lease back: the
+    // queue would otherwise stall in the other tabs forever.
+    if (!this.connected) {
+      this._releaseLease();
+      return;
+    }
     try {
       const raw = window.localStorage.getItem(LEADER_KEY);
       const lease = raw ? JSON.parse(raw) : null;
@@ -88,10 +108,34 @@ export class QueueManager {
     }
   }
 
-  broadcast() {
+  /** Give the leader lease back so another tab can take over. */
+  _releaseLease() {
+    try {
+      const raw = window.localStorage.getItem(LEADER_KEY);
+      const lease = raw ? JSON.parse(raw) : null;
+      if (lease && lease.id === this.tabId) {
+        window.localStorage.removeItem(LEADER_KEY);
+      }
+    } catch (err) {
+      /* ignore */
+    }
+  }
+
+  /**
+   * Tell the queue whether this tab still has a working backend connection.
+   *
+   * The lease is only worth holding while the tab can actually dispatch.
+   */
+  setConnected(connected) {
+    this.connected = connected !== false;
+    if (!this.connected) this._releaseLease();
+    return this.connected;
+  }
+
+  broadcast(message) {
     if (!this.channel) return;
     try {
-      this.channel.postMessage({ type: 'state-changed' });
+      this.channel.postMessage(message || { type: 'state-changed' });
     } catch (err) {
       /* ignore */
     }
@@ -107,17 +151,7 @@ export class QueueManager {
     }
     // Hand the lease over immediately when this tab goes away. Without
     // this a reloaded page would have to wait for the lease to time out.
-    this._releaseOnUnload = () => {
-      try {
-        const raw = window.localStorage.getItem(LEADER_KEY);
-        const lease = raw ? JSON.parse(raw) : null;
-        if (lease && lease.id === this.tabId) {
-          window.localStorage.removeItem(LEADER_KEY);
-        }
-      } catch (err) {
-        /* ignore */
-      }
-    };
+    this._releaseOnUnload = () => this._releaseLease();
     if (typeof window !== 'undefined') {
       window.addEventListener('pagehide', this._releaseOnUnload);
       window.addEventListener('beforeunload', this._releaseOnUnload);
@@ -231,9 +265,31 @@ export class QueueManager {
     return queued.length ? queued[0] : null;
   }
 
+  /**
+   * Pick up tasks that another tab queued.
+   *
+   * The queue itself lives in the shared store, but every tab keeps its own
+   * copy in memory. The tab that holds the leader lease is the one that
+   * dispatches, so it has to read the shared queue first - otherwise a task
+   * queued in another tab would never be submitted.
+   */
+  async mergeFromStore() {
+    try {
+      const stored = await this.taskStore.listLocal();
+      for (const record of stored) {
+        if (!record || !record.id) continue;
+        if (this.records.has(record.id)) continue;
+        this.records.set(record.id, record);
+      }
+    } catch (err) {
+      /* the store is optional */
+    }
+  }
+
   async dispatch() {
     if (this.settings.get('paused')) return;
     if (!this.isLeader()) return;
+    await this.mergeFromStore();
     const limit = Math.max(1, Number(this.settings.get('preSubmitLimit')) || 1);
     let guard = 0;
     while (this.inFlightCount() < limit && guard < 16) {
@@ -265,7 +321,7 @@ export class QueueManager {
       this.records.delete(record.id);
       this.records.set(promptId, next);
       await this.taskStore.deleteLocal(record.id);
-      this.broadcast();
+      this.broadcast({ type: 'task-submitted', id: record.id, promptId });
       this.onChange();
       return next;
     } catch (err) {
