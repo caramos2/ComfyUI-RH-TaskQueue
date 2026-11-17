@@ -2,7 +2,23 @@
   "name": "comfyui-rh-taskqueue",
   "private": true,
   "type": "module",
-  "description": "Development harness for ComfyUI-RH-TaskQueue (runtime does not need npm).",
+  "description": "RunningHub-style task drawer for ComfyUI: real execution timings, a frozen-parameter run button, output previews, a workflow duration archive and a queue you control. Bilingual (English / zh-CN).",
+  "license": "MIT",
+  "homepage": "https://github.com/caramos2/ComfyUI-RH-TaskQueue#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/caramos2/ComfyUI-RH-TaskQueue.git"
+  },
+  "bugs": {
+    "url": "https://github.com/caramos2/ComfyUI-RH-TaskQueue/issues"
+  },
+  "keywords": [
+    "comfyui",
+    "comfyui-extension",
+    "task-queue",
+    "i18n",
+    "bilingual"
+  ],
   "scripts": {
     "test": "node --test tests/js"
   }
